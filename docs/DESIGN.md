@@ -2,18 +2,19 @@
 
 **Status: built.** This is the design Nebula was built from (in the code it is still called "the cockpit", its working
 name; the package is `nebula/`). The build diary that followed it stays with the engine fork it was written in; the
-README says how to run every piece. Numbers quoted here come from the pages that measured them.
+README says how to run every piece. Numbers quoted here come from the pages that measured them. The engine was called
+Strata-Lite when this was written; it is Impulse now (`impulse/`, `impulse-server`), and the names below are updated.
 
-The cockpit is a new server above the Strata-Lite engine. It gives one person, on one PC, an assistant that picks how
+The cockpit is a new server above the Impulse engine. It gives one person, on one PC, an assistant that picks how
 hard the model thinks, escalates to a bigger model when the local one is stuck, carries the conversation across that
 escalation without starting over, and keeps a record of every decision it made. Later it becomes a platform other people
 run without authoring a project. Strata's chat page stays what it is: a window onto one model.
 
 ## The stable line
 
-The engine's HTTP API is the line. Below it: `strata-lite-server`, its ports, the expert cache, MTP, the KV pager, the
+The engine's HTTP API is the line. Below it: `impulse-server`, its ports, the expert cache, MTP, the KV pager, the
 installer's builds. That part keeps tracking upstream Strata and llama.cpp as it does today. Above it: the cockpit, written
-fresh, in its own package. The cockpit talks to the engine only through what `lite/docs/API.md` lists:
+fresh, in its own package. The cockpit talks to the engine only through what `impulse/docs/API.md` lists:
 
 | endpoint | the cockpit uses it for |
 |---|---|
@@ -21,15 +22,15 @@ fresh, in its own package. The cockpit talks to the engine only through what `li
 | `GET /health`, `GET /props`, `GET /slots` | is the engine up, which model, is the one slot busy |
 | `GET /metrics`, `timings` and `usage` in each response | the ledger's cost columns |
 
-Rule: the cockpit never imports from `strata/` or `lite/`, and never reads the engine's files. A second engine (another
+Rule: the cockpit never imports from `impulse/`, and never reads the engine's files. A second engine (another
 box, or a second process once the box has the VRAM) is the same API at another address.
 
 ## What shapes the design (measured, or stated by the engine's docs)
 
-- **One request at a time** per engine (`lite/docs/RUN.md`). Anything the cockpit wants from the model, a user turn, a
+- **One request at a time** per engine (`impulse/docs/RUN.md`). Anything the cockpit wants from the model, a user turn, a
   summary, a routing classifier, competes for that one slot.
 - **One model per process.** Changing model means loading another one. Strata's llama-swap page measured 80 s and 105 s
-  to load Qwen3.8-Flash-Next from a SATA SSD; Strata-Lite's own load time has not been measured for this page. Either
+  to load Qwen3.8-Flash-Next from a SATA SSD; Impulse's own load time has not been measured for this page. Either
   way it is minutes, not seconds, and the prompt cache is lost.
 - **The prompt cache lives in the process.** A conversation that moves to another engine is read again from the start.
   At 157k tokens that read took 234 s on an RTX 3060 and 159 s on an RTX 5070 (README grid, 262k context).
@@ -47,7 +48,7 @@ crosses with it.
 
 | seam | owner | what it is |
 |---|---|---|
-| Inference | Strata-Lite engine, unchanged | the API above |
+| Inference | Impulse engine, unchanged | the API above |
 | Gateway | cockpit, lifted from `serve/` | OpenAI, Anthropic and Responses dialects in; engine chat completions out |
 | Stream parsing | cockpit, lifted from `serve/frontend.py` | `reasoning_content` from the engine where it separates thinking itself; `OutputParser` for tool calls written as template tags, and for engines that do not separate thinking |
 | Tools | cockpit, lifted from `serve/mcp.py` | `McpHub`: stdio and Streamable HTTP MCP servers, tools named `server__tool`, failures as `error:` results |
@@ -203,5 +204,5 @@ Requirements, not a design:
    thinking for both? `OutputParser` is lifted on the answer, not before.
 3. The `cloud` tier: which provider first, and does its API expose reasoning text, a summary, or nothing? The
    `reasoning_visibility` column records the answer per event.
-4. The second box: plain HTTP to another `strata-lite-server`, or a router's front (a broker in front of several engines) with its admission and
+4. The second box: plain HTTP to another `impulse-server`, or a router's front (a broker in front of several engines) with its admission and
    decision receipts? Plain HTTP first; the front's receipt shape informs the `handoffs` columns either way.

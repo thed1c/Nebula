@@ -3,7 +3,7 @@
 The user-facing guide is the [README](../README.md). This page is for building and running Nebula from source,
 the config file and the API.
 
-Your own AI environment above the engines on your machine: one server in front of local engines (Strata-Lite,
+Your own AI environment above the engines on your machine: one server in front of local engines (Impulse,
 llama.cpp, or any OpenAI-compatible server), cloud providers and CLIs, with a router, agents, a ledger of every
 decision, and a live star-map page. In the code it is still called "the cockpit", its working name.
 
@@ -187,7 +187,7 @@ python3 -m nebula.app --config nebula.json
 
 ```json
 {"app": {"title": "Nebula", "prevent_sleep": false,
-         "engine": {"tier": "fast", "command": ["/path/to/strata-lite-server", "-m", "model.gguf", "--port", "8080"],
+         "engine": {"tier": "fast", "command": ["/path/to/impulse-server", "-m", "model.gguf", "--port", "8080"],
                     "ready_timeout_s": 900, "stop_timeout_s": 30, "log": "engine.log"}}}
 ```
 
@@ -213,7 +213,7 @@ an engine the cockpit did not start, name where its log is:
 
 ```json
 {"engine_logs": [{"tier": "fast", "command": ["journalctl", "--user-unit", "my-engine.service", "-f", "-n", "0", "-o", "cat"]},
-                 {"tier": "big", "file": "/var/log/strata/big.log"}]}
+                 {"tier": "big", "file": "/var/log/impulse/big.log"}]}
 ```
 
 Tests, without an engine:
@@ -222,11 +222,11 @@ Tests, without an engine:
 python3 -m unittest discover -s nebula/tests -t .
 ```
 
-Parity with the engine, through the cockpit, with Strata-Lite's checker (the engine must have been started with
+Parity with the engine, through the cockpit, with Impulse's checker (the engine must have been started with
 `--alias reference`, or the cockpit with `--alias reference`):
 
 ```bash
-python3 lite/tests/api_parity.py http://127.0.0.1:8090      # from a Strata-Lite checkout
+python3 impulse/tests/api_parity.py http://127.0.0.1:8090
 ```
 
 Examples: `nebula/examples/local-engine.json` (one local engine, four example agents),

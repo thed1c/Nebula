@@ -12,6 +12,9 @@ Everything runs on your machine, and nothing leaves it unless you say so.
 
 > **Nebula is in testing.** Things may be rough around the edges. If something goes wrong, tell us (see [Getting help](#getting-help)). That's the whole point of testing.
 
+<p align="center"><a href="https://buymeacoffee.com/thed1c"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a><br>
+<sub>Nebula is free. If it runs well for you, a coffee keeps the work on it going.</sub></p>
+
 **New in 0.1.3:** one engine (Impulse) behind everything, Impulse Flash-Next for very large models (manual setup), opt-in long
 context up to 1M tokens, several requests at once, and updates that only happen when you say so.
 
@@ -347,6 +350,13 @@ We'd rather you hear it from us:
 
 - Something broke? Open **Engineering → System**. It has an error log you can copy.
 - Tell us in an [issue](../../issues), with what you did and what you saw. A screenshot helps.
+
+## Support Nebula
+
+Nebula is free and open source, and it always will be. If it's useful to you, you can buy me a coffee at
+[buymeacoffee.com/thed1c](https://buymeacoffee.com/thed1c). Impulse grew out of Niko's
+[Strata](https://github.com/Niko1221/Strata), so if you'd like to thank him too:
+[buymeacoffee.com/strataengine](https://buymeacoffee.com/strataengine).
 
 ## For developers
 
