@@ -553,6 +553,9 @@
   .tick { display:inline-flex; align-items:center; gap:5px; margin:2px 6px 2px 0; padding:3px 9px; border-radius:12px; border:1px solid var(--line); background:var(--p2); cursor:pointer; font-size:12px; }
   .tick.on { border-color:var(--vio); box-shadow:0 0 10px -4px var(--vio); color:var(--ink); }
   .tick input { display:none; }
+  .tick:has(input:checked) { border-color:var(--vio); box-shadow:0 0 10px -4px var(--vio); color:var(--ink); background:rgba(155,107,255,.18); }
+  .tick:has(input:checked)::before { content:"✓"; color:#c6b2ff; font-weight:700; }
+  .tick:has(input:disabled) { cursor:default; }
   .body.unticked { opacity:.3; filter:saturate(.3); }
   .copy { background:none; border:1px solid var(--line); border-radius:4px; color:#c6b2ff; cursor:pointer; font:inherit; font-size:11px; padding:1px 6px; margin-left:6px; }
   @media (max-width: 900px) { .grid2 { grid-template-columns:1fr; } }
@@ -965,6 +968,16 @@
   const PALETTE = ["#4d8dff", "#9b6bff", "#e3b75a", "#5fd3a0", "#f0b35a", "#ff5d73"];
   const colour = (name) => { const i = state.tiers.findIndex(t => t.name === name); return PALETTE[(i < 0 ? 5 : i) % PALETTE.length]; };
   const agentName = (n) => n === "assistant" ? "Halo" : n;        // the built-in agent is Halo (design decision 10-20)
+  // copy to the clipboard; on a page opened over plain http from another machine there is no navigator.clipboard,
+  // so the text is selected and copied the old way. The button says "copied" for a moment either way.
+  async function copyText(text, btn) {
+    let ok = false;
+    try { if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); ok = true; } } catch (e) {}
+    if (!ok) { const t = document.createElement("textarea"); t.value = text; t.style.position = "fixed"; t.style.opacity = "0";
+      document.body.appendChild(t); t.select(); try { ok = document.execCommand("copy"); } catch (e) {} t.remove(); }
+    if (btn) { const was = btn.textContent; btn.textContent = ok ? "copied" : "select it and copy by hand"; setTimeout(() => { btn.textContent = was; }, 1500); }
+    return ok;
+  }
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
   const when = (iso) => { if (!iso) return ""; const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); };
   const ago = (iso) => { if (!iso) return "never"; const s = (Date.now() - new Date(iso)) / 1000; return s < 60 ? "just now" : s < 3600 ? Math.round(s / 60) + " min ago" : s < 86400 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago"; };
@@ -2918,6 +2931,7 @@
         <a href="https://www.iroh.computer/pricing" target="_blank" rel="noopener">iroh's plans</a> (a dedicated relay of theirs goes in "the URL of a gateway you run" below)</p>
       <div class="row" style="margin:10px 0;gap:8px;display:flex;flex-wrap:wrap"><button class="btn" id="gv-inv">Invite a friend</button><button class="btn" id="gv-own">Invite one of my machines</button>
         <input id="gv-join" placeholder="paste an invite (nebula-invite:…)" style="flex:1;min-width:260px"><button class="btn pri" id="gv-joinb">Join</button></div>
+      <div id="gv-copyrow" class="row" style="margin:0 0 4px" hidden><button class="btn" id="gv-copy">Copy invite</button></div>
       <pre class="cmdline" id="gv-out" hidden></pre>
       <table class="ptable"><thead><tr><th>Peer</th><th>What it is</th><th>Models it may use here</th><th></th></tr></thead><tbody>${(v.peers || []).map(p => `<tr data-peer="${esc(p.id)}">
         <td><b>${esc(p.name)}</b><small>${esc(p.id.slice(0, 16))}…</small></td><td>${p.role === "admin" ? "your machine (you manage it)" : p.role === "owner" ? "your machine (manages this one)" : "a friend"}</td>
@@ -2934,10 +2948,11 @@
         <input id="gv-mail" placeholder="email for its certificate" style="min-width:180px"><button class="btn" id="gv-here">Deploy here</button><button class="btn" id="gv-else">Deploy elsewhere…</button>
         ${v.gateway ? `<button class="btn" id="gv-gwrm">Remove</button>` : ""}</div>
       <div class="row" style="display:flex;gap:8px;margin-top:6px"><input id="gv-relay" placeholder="or the URL of a gateway you run (https://…)" value="${esc((v.relays || [])[0] || "")}" style="flex:1"><button class="btn" id="gv-relayb">Use</button></div>`;
-    const show = (t) => { $("gv-out").hidden = false; $("gv-out").textContent = t; };
+    const show = (t, copy) => { $("gv-out").hidden = false; $("gv-out").textContent = t; $("gv-copyrow").hidden = !copy;
+      if (copy) $("gv-copy").onclick = () => copyText(copy, $("gv-copy")); };
     $("gv-public").onchange = async (e) => { try { await postJ("/api/yard/node/public-relay", { on: e.target.checked }); } catch (x) { alert(x.message); } loadGravityNode(); };
-    $("gv-inv").onclick = async () => { const r = await postJ("/api/yard/node/invite", { kind: "friend" }); show(r.invite + "\n\n" + r.note); };
-    $("gv-own").onclick = async () => { const r = await postJ("/api/yard/node/invite", { kind: "owner" }); show(r.invite + "\n\nPaste it in Gravity › Join on your other machine. " + r.note); };
+    $("gv-inv").onclick = async () => { const r = await postJ("/api/yard/node/invite", { kind: "friend" }); show(r.invite + "\n\n" + r.note, r.invite); };
+    $("gv-own").onclick = async () => { const r = await postJ("/api/yard/node/invite", { kind: "owner" }); show(r.invite + "\n\nPaste it in Gravity › Join on your other machine. " + r.note, r.invite); };
     $("gv-joinb").onclick = async () => { try { const r = await postJ("/api/yard/node/join", { invite: $("gv-join").value }); show("joined " + r.peer.name); loadGravityNode(); } catch (e) { show(e.message); } };
     const gwBody = (extra) => ({ hostname: $("gv-host").value || undefined, email: $("gv-mail").value || undefined, ...extra });
     $("gv-here").onclick = async () => { try { const r = await postJ("/api/yard/node/gateway", gwBody({})); show("gateway running: " + r.url); loadGravityNode(); } catch (e) { show(e.message); } };
@@ -3155,7 +3170,7 @@
       wzRender(); wzPoll();
     });
     on("[data-wz-undo]", async () => { if (!confirm("Undo what this wizard did?")) return; try { wz.job = await postJ(`/api/wizards/jobs/${wz.job.id}/undo`, {}); } catch (e) { wz.err = e.message; } wzRender(); });
-    on("[data-wz-copy]", () => { const t = body.querySelector("pre.inv"); navigator.clipboard?.writeText(t ? t.textContent : wz.job.result.invite); });
+    on("[data-wz-copy]", () => { const t = body.querySelector("pre.inv"); copyText(t ? t.textContent : wz.job.result.invite, body.querySelector("[data-wz-copy]")); });
     for (const r of body.querySelectorAll('input[type=radio]')) r.onchange = () => { wzRead(); for (const c of body.querySelectorAll(".mcard")) c.classList.toggle("on", c.querySelector("input").checked); };
     const shapes = (k) => wz.def.steps.some(st => st.fields.some(f => f.when_field === k) || (st.when && k in st.when));
     for (const c of body.querySelectorAll('input[type=checkbox], input[type=radio]')) if (shapes(c.name)) c.addEventListener("change", () => { wzRead(); wzRender(); });
