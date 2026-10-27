@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3.1
+
+**Fixes**
+- Old conversations can be deleted: one at a time with the ✕ beside it, or all the closed ones at once. Nebula asks
+  first, and keeps a conversation whose reply is still on the way.
+- Gravity: the ticks (Use the public relay, and the models a peer may use) light up with a check mark when they are on.
+- Gravity: Invite a friend and Invite one of my machines have a Copy invite button that copies just the invite.
+
 ## 0.1.3
 
 **One engine for every model.** Impulse now runs every lane: the Flash-Next packs and the GGUF models start from the same

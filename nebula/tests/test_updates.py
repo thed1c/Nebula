@@ -90,6 +90,9 @@ class VersionTest(unittest.TestCase):
         self.assertFalse(U.is_newer("0.1.1", "0.1.2"))
         self.assertTrue(U.is_newer("0.1.10", "0.1.9"))        # numbers, not text
         self.assertFalse(U.is_newer("v0.2", "0.2.0"))
+        self.assertTrue(U.is_newer("0.1.3.1", "0.1.3"))        # a fix release: four numbers
+        self.assertFalse(U.is_newer("0.1.3", "0.1.3.1"))
+        self.assertTrue(U.is_newer("0.1.4", "0.1.3.1"))
         with self.assertRaises(ValueError):
             U.version_tuple("0.1.3-beta")
 
