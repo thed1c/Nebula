@@ -81,6 +81,17 @@ class DeleteSessionsTest(unittest.TestCase):
         self.assertEqual((out["deleted"], out["busy"]), ([], [a]))
         self.assertEqual(self.listed(), [a])
 
+    def test_a_call_left_running_long_ago_does_not_block(self):
+        """A crash or a restart can leave an attempt "running" for ever: older than STUCK_AFTER_S it is not in flight."""
+        a = self.chat("one")
+        db = sqlite3.connect(self.rig.path)
+        db.execute("UPDATE attempts SET state='running', created_at='2026-01-01T00:00:00+00:00' WHERE session_id=?", (a,))
+        db.commit()
+        db.close()
+        status, _h, raw = req(self.base, f"/api/sessions/{a}/delete", {})
+        self.assertEqual((status, json.loads(raw)["deleted"]), (200, [a]))
+        self.assertEqual(set(self.rows(a).values()), {0})
+
     def test_the_page_asks_first(self):
         html = PAGE.read_text()
         for want in ('class="sdel" data-del=', 'data-delclosed="1"', 'id="del"', 'if (!confirm(question)) return;',

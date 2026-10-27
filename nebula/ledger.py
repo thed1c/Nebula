@@ -340,18 +340,25 @@ class Ledger:
 
     SESSION_TABLES = ("costs", "outcomes", "handoffs", "decisions", "events", "attempts", "tasks", "sessions")
 
-    def delete_sessions(self, session_ids) -> dict:
+    STUCK_AFTER_S = 7200        # a call "running" longer than this was never closed (a crash, a restart): not in flight
+
+    def delete_sessions(self, session_ids, stuck_after_s: float | None = None) -> dict:
         """The owner deletes conversations for good: every row they own in every table (their messages, attempts,
         decisions, handoffs, outcomes, costs), in one transaction. A conversation with a call still running is not
-        deleted (it is in "busy"); an unknown id is in "missing"."""
+        deleted (it is in "busy"), unless that call started more than stuck_after_s ago (it was never closed: a crash or
+        a restart left it "running"); an unknown id is in "missing"."""
+        import datetime as _dt
         ids = list(dict.fromkeys(str(s) for s in session_ids if s))
         out = {"deleted": [], "busy": [], "missing": []}
+        since = (_dt.datetime.now(_dt.timezone.utc)
+                 - _dt.timedelta(seconds=self.STUCK_AFTER_S if stuck_after_s is None else stuck_after_s)).isoformat()
         with self._tx() as db:
             for sid in ids:
                 if db.execute("SELECT 1 FROM sessions WHERE session_id=?", (sid,)).fetchone() is None:
                     out["missing"].append(sid)
                     continue
-                if db.execute("SELECT 1 FROM attempts WHERE session_id=? AND state='running' LIMIT 1", (sid,)).fetchone():
+                if db.execute("SELECT 1 FROM attempts WHERE session_id=? AND state='running' AND created_at>=? LIMIT 1",
+                              (sid, since)).fetchone():
                     out["busy"].append(sid)
                     continue
                 for table in self.SESSION_TABLES:
