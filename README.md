@@ -354,9 +354,7 @@ We'd rather you hear it from us:
 ## Support Nebula
 
 Nebula is free and open source, and it always will be. If it's useful to you, you can buy me a coffee at
-[buymeacoffee.com/thed1c](https://buymeacoffee.com/thed1c). Impulse grew out of Niko's
-[Strata](https://github.com/Niko1221/Strata), so if you'd like to thank him too:
-[buymeacoffee.com/strataengine](https://buymeacoffee.com/strataengine).
+[buymeacoffee.com/thed1c](https://buymeacoffee.com/thed1c).
 
 ## For developers
 
