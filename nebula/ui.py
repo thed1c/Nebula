@@ -5,7 +5,9 @@
     GET  /api/sessions              one line per session: title, turns, tier, lifecycle
     GET  /api/sessions/ID           the transcript with each reply's tier, model, thinking, decision and cost,
                                     and the handoffs, briefings and lifecycle changes between the turns
-    POST /api/sessions/ID/close     explicit close; /reopen puts it back
+    POST /api/sessions/ID/close     explicit close; /reopen puts it back; /delete deletes it for good
+    POST /api/sessions/delete       {"ids": [...]} or {"closed": true}: delete those conversations for good (not one with a
+                                    call still running); the security log records how many
     POST /api/chat                  {"session_id"?, "text"?, "tier"?, "agent"?, "escalate"?, "regenerate_from_seq"?}
                                     streams the answer as the chat dialect's SSE; the X-Nebula-Session-Id header
                                     names the session (a new one on the first turn)
@@ -1189,8 +1191,20 @@ def post(server, path: str, engine, ctx: Context, req: dict):
         rest = path[len("/api/sandboxes/"):].strip("/").split("/")
         if len(rest) == 2:
             return JsonReply(200, sandbox_action(server, rest[0], rest[1], req))
+    if path == "/api/sessions/delete":
+        ids = ledger.closed_sessions() if req.get("closed") is True else req.get("ids")
+        if not isinstance(ids, list):
+            raise UiError(400, 'delete: {"ids": [...]} or {"closed": true}')
+        return JsonReply(200, delete_sessions(server, ledger, ids))
     if path.startswith("/api/sessions/"):
         rest = path[len("/api/sessions/"):].strip("/").split("/")
+        if len(rest) == 2 and rest[1] == "delete":
+            out = delete_sessions(server, ledger, [rest[0]])
+            if out["missing"]:
+                raise UiError(404, f"no session {rest[0]}")
+            if out["busy"]:
+                raise UiError(409, "this conversation has a reply on the way: delete it when it is done")
+            return JsonReply(200, out)
         if len(rest) == 2 and rest[1] in ("close", "reopen"):
             sid = rest[0]
             if ledger.session(sid) is None:
@@ -1198,6 +1212,15 @@ def post(server, path: str, engine, ctx: Context, req: dict):
             ledger.set_lifecycle(sid, "closed" if rest[1] == "close" else "active", "user")
             return JsonReply(200, {"session_id": sid, "lifecycle": ledger.session(sid)["lifecycle"]})
     raise UiError(404, f"no such path: {path}")
+
+
+def delete_sessions(server, ledger, ids: list) -> dict:
+    """Conversations deleted for good (nebula/ledger.py delete_sessions); the security log keeps how many, never what."""
+    out = ledger.delete_sessions(ids)
+    log = getattr(server, "seclog", None)
+    if log is not None and out["deleted"]:
+        log.add("sessions.deleted", "owner", None, count=len(out["deleted"]))
+    return out
 
 
 IMAGE_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif")

@@ -423,6 +423,11 @@
   .sess b { display:block; font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .sess small { color:var(--mut); font-size:11.5px; }
   .sess.closed b { color:var(--mut); }
+  /* a conversation's own delete, beside it in the list; "Delete closed conversations" at the end */
+  .srow { display:flex; align-items:center; gap:2px; } .srow .sess { flex:1; min-width:0; }
+  .sdel { flex:none; background:none; border:0; border-radius:5px; padding:6px 8px; color:var(--mut); cursor:pointer; font-size:13px; opacity:.35; }
+  .srow:hover .sdel, .sdel:focus-visible { opacity:1; } .sdel:hover, .sdel:focus-visible { color:var(--crit); background:var(--p3); }
+  .sess.sdelall b { color:var(--crit); font-weight:500; }
   .sess.new b { color:#c6b2ff; }
   .log { flex:1; min-height:0; overflow-y:auto; padding:6px max(0px, calc((100% - 1040px) / 2)) 10px; }
   .msg { display:grid; grid-template-columns:36px minmax(0,1fr); gap:0 12px; padding:6px 14px; margin-top:6px; }
@@ -812,7 +817,7 @@
         <div class="rhd">
           <div class="pick" id="pick"><button type="button" id="pickb" aria-haspopup="listbox" aria-expanded="false"><b id="title">New session</b><i>▾</i></button><ul id="sessions" role="listbox"></ul></div>
           <span id="ctx"></span><span class="grow"></span>
-          <button class="btn" id="close" style="display:none">Close</button><button class="btn" id="reopen" style="display:none">Reopen</button>
+          <button class="btn" id="close" style="display:none">Close</button><button class="btn" id="reopen" style="display:none">Reopen</button><button class="btn" id="del" style="display:none" title="delete this conversation for good">Delete</button>
         </div>
         <div class="rbody"><div class="rmain">
         <div class="log" id="log"></div>
@@ -1031,11 +1036,31 @@
   // the sessions: a drop-down in the conversation's header, "New session" first
   async function loadSessions() {
     state.sessions = await api("/api/sessions");
+    const nClosed = state.sessions.filter(s => s.lifecycle === "closed").length;
     $("sessions").innerHTML = `<li><button class="sess new" data-id=""><b>＋ New session</b><small>an empty conversation</small></button></li>` + state.sessions.map(s => `
-      <li><button class="sess ${s.session_id === state.sid ? "on" : ""} ${s.lifecycle === "closed" ? "closed" : ""}" role="option" data-id="${esc(s.session_id)}">
+      <li class="srow"><button class="sess ${s.session_id === state.sid ? "on" : ""} ${s.lifecycle === "closed" ? "closed" : ""}" role="option" data-id="${esc(s.session_id)}">
         <b>${esc(s.title)}</b><small>${s.turns} turn${s.turns === 1 ? "" : "s"} · <span style="color:${colour(s.current_tier)}">${esc(s.current_tier || "—")}</span>${s.lifecycle === "closed" ? " · closed" : ""} · ${ago(s.updated_at)}</small>
-      </button></li>`).join("");
-    for (const el of $("sessions").querySelectorAll(".sess")) el.onclick = () => { pick(false); if (el.dataset.id) open(el.dataset.id); else fresh(); };
+      </button><button class="sdel" data-del="${esc(s.session_id)}" title="delete this conversation" aria-label="delete ${esc(s.title)}">✕</button></li>`).join("")
+      + (nClosed ? `<li><button class="sess sdelall" data-delclosed="1"><b>Delete closed conversations (${nClosed})</b><small>for good: their messages are removed from this computer</small></button></li>` : "");
+    for (const el of $("sessions").querySelectorAll(".sess[data-id]")) el.onclick = () => { pick(false); if (el.dataset.id) open(el.dataset.id); else fresh(); };
+    for (const el of $("sessions").querySelectorAll(".sdel")) el.onclick = (e) => {
+      e.stopPropagation(); const s = state.sessions.find(x => x.session_id === el.dataset.del);
+      deleteSessions({ ids: [el.dataset.del] }, `Delete "${s ? s.title : "this conversation"}" for good? Its messages are removed from this computer.`);
+    };
+    const all = $("sessions").querySelector("[data-delclosed]");
+    if (all) all.onclick = (e) => { e.stopPropagation(); deleteSessions({ closed: true }, `Delete ${nClosed} closed conversation${nClosed === 1 ? "" : "s"} for good? Their messages are removed from this computer.`); };
+  }
+  // deleting conversations for good (POST /api/sessions/delete): asked first; one with a reply on the way is kept
+  async function deleteSessions(body, question) {
+    if (!confirm(question)) return;
+    let r;
+    try { r = await api("/api/sessions/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
+    catch (e) { alert("The conversation could not be deleted: " + e.message); return; }
+    const gone = new Set(r.deleted || []);
+    state.tabs = state.tabs.filter(t => !gone.has(t.sid)); saveTabs();
+    if (gone.has(state.sid)) fresh(); else renderTabs();
+    if ((r.busy || []).length) alert(`${r.busy.length} conversation${r.busy.length === 1 ? " has" : "s have"} a reply on the way and ${r.busy.length === 1 ? "was" : "were"} kept: delete ${r.busy.length === 1 ? "it" : "them"} when it is done.`);
+    if ($("pick").classList.contains("on")) loadSessions();
   }
   function pick(on) {
     $("pick").classList.toggle("on", on); $("pickb").setAttribute("aria-expanded", on ? "true" : "false");
@@ -1114,7 +1139,7 @@
     $("title").textContent = v ? ((v.items.find(i => i.kind === "message" && i.role === "user") || {}).content?.slice(0, 80) || v.session.session_id) : "New session";
     const c = v?.context || {}, pct = c.n_ctx ? Math.round(100 * c.last_prompt_tokens / c.n_ctx) : null;
     $("ctx").textContent = v && c.n_ctx ? `context ${c.last_prompt_tokens.toLocaleString()} / ${c.n_ctx.toLocaleString()} · ${pct}%` : "";
-    $("close").style.display = v && !closed ? "" : "none"; $("reopen").style.display = closed ? "" : "none";
+    $("close").style.display = v && !closed ? "" : "none"; $("reopen").style.display = closed ? "" : "none"; $("del").style.display = v ? "" : "none";
     $("send").disabled = !!closed || state.busy;
     if (!v) { log.innerHTML = '<div class="mark"><span class="plate dim">Begin</span></div>'; return; }
     const names = state.tiers.map(t => t.name);
@@ -4296,6 +4321,7 @@
   document.addEventListener("click", (e) => { if (!e.target.closest(".cgear")) $("cgearl").hidden = true; });
   $("close").onclick = async () => { await post("/api/sessions/" + state.sid + "/close"); open(state.sid); };
   $("reopen").onclick = async () => { await post("/api/sessions/" + state.sid + "/reopen"); open(state.sid); };
+  $("del").onclick = () => { if (state.sid) deleteSessions({ ids: [state.sid] }, `Delete "${$("title").textContent}" for good? Its messages are removed from this computer.`); };
   let resizeTimer = 0;
   new ResizeObserver(() => { if (state.tab === "home" && (live.W !== $("stage").clientWidth || live.H !== $("stage").clientHeight)) { measure(); yard(); } }).observe($("stage"));
   window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { measure(); yard(); }, 60); });

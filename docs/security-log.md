@@ -15,6 +15,7 @@ Halo reads it through Lookup's read-only `security` tool, and the owner reads it
 | `key.used` | a key's first use in the hour, and again from a new address (by its id, never the key) |
 | `key.made`, `key.revoked` | an API Server or caller key made or revoked on the page |
 | `caller.changed`, `caller.removed` | a caller added, changed or removed |
+| `sessions.deleted` | conversations deleted for good on the page (how many; never which, nor what they said) |
 | `guest.refused` | a guest asked for a model not shared with it (an app's key, or a Gravity peer) |
 | `gravity.invite`, `gravity.join`, `gravity.joined`, `gravity.refused`, `gravity.grants`, `gravity.revoked` | Gravity invites made, someone joining by one, this Nebula joining another, an invite refused, models ticked for a peer, a peer removed |
 | `share.changed` | a model marked shared, an entry point or a collection's sharing changed |

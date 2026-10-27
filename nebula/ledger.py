@@ -338,6 +338,30 @@ class Ledger:
                        (to, t, session_id))
             self._event(db, session_id, None, "lifecycle", None, {"to": to, "why": why}, None, t)
 
+    SESSION_TABLES = ("costs", "outcomes", "handoffs", "decisions", "events", "attempts", "tasks", "sessions")
+
+    def delete_sessions(self, session_ids) -> dict:
+        """The owner deletes conversations for good: every row they own in every table (their messages, attempts,
+        decisions, handoffs, outcomes, costs), in one transaction. A conversation with a call still running is not
+        deleted (it is in "busy"); an unknown id is in "missing"."""
+        ids = list(dict.fromkeys(str(s) for s in session_ids if s))
+        out = {"deleted": [], "busy": [], "missing": []}
+        with self._tx() as db:
+            for sid in ids:
+                if db.execute("SELECT 1 FROM sessions WHERE session_id=?", (sid,)).fetchone() is None:
+                    out["missing"].append(sid)
+                    continue
+                if db.execute("SELECT 1 FROM attempts WHERE session_id=? AND state='running' LIMIT 1", (sid,)).fetchone():
+                    out["busy"].append(sid)
+                    continue
+                for table in self.SESSION_TABLES:
+                    db.execute(f"DELETE FROM {table} WHERE session_id=?", (sid,))
+                out["deleted"].append(sid)
+        return out
+
+    def closed_sessions(self) -> list[str]:
+        return [r["session_id"] for r in self.db.execute("SELECT session_id FROM sessions WHERE lifecycle='closed'")]
+
     def session(self, session_id: str) -> dict | None:
         row = self.db.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
         return dict(row) if row else None

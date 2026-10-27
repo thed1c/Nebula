@@ -48,6 +48,7 @@ KINDS = {
     "entry.added": "notice", "entry.changed": "notice", "entry.removed": "notice", "otel.settings": "notice",
     "halo.action": "alert", "halo.undo": "notice", "halo.ask": "alert", "halo.error": "warn",
     "admin.refused": "warn",
+    "sessions.deleted": "notice",      # conversations deleted for good on the page (how many, never what)
 }
 
 SCHEMA = """
