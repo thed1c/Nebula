@@ -12,9 +12,6 @@ Everything runs on your machine, and nothing leaves it unless you say so.
 
 > **Nebula is in testing.** Things may be rough around the edges. If something goes wrong, tell us (see [Getting help](#getting-help)). That's the whole point of testing.
 
-<p align="center"><a href="https://buymeacoffee.com/thed1c"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a><br>
-<sub>Nebula is free. If it runs well for you, a coffee keeps the work on it going.</sub></p>
-
 **New in 0.1.3:** one engine (Impulse) behind everything, Impulse Flash-Next for very large models (manual setup), opt-in long
 context up to 1M tokens, several requests at once, and updates that only happen when you say so.
 
@@ -306,7 +303,7 @@ switched off, so today the gap may be smaller. We haven't re-checked that yet.
 
 **Other engines.** llama.cpp's own server is still there as the reference: it runs any GGUF model you bring, and
 Nebula uses it by itself if Impulse can't run on your card. Any engine you have in a container image works too, from
-the **Engineering** tab. Strata is no longer offered as an engine; Impulse took over its job.
+the **Engineering** tab.
 
 ## Advanced: big setups, CPU and memory
 
@@ -351,11 +348,6 @@ We'd rather you hear it from us:
 - Something broke? Open **Engineering → System**. It has an error log you can copy.
 - Tell us in an [issue](../../issues), with what you did and what you saw. A screenshot helps.
 
-## Support Nebula
-
-Nebula is free and open source, and it always will be. If it's useful to you, you can buy me a coffee at
-[buymeacoffee.com/thed1c](https://buymeacoffee.com/thed1c).
-
 ## For developers
 
 Building from source, the config file, the full API and how the pieces fit together are in
@@ -363,5 +355,11 @@ Building from source, the config file, the full API and how the pieces fit toget
 
 ## Licence
 
-MIT, see [LICENSE](LICENSE). Nebula and Impulse include code from [Strata](https://github.com/Niko1221/Strata) (MIT)
-and other open-source projects; see [NOTICE](NOTICE).
+MIT, see [LICENSE](LICENSE). Nebula and Impulse include code from other open-source projects, each under its own
+licence; see [NOTICE](NOTICE).
+
+## Buy me some compute
+
+Nebula is free and open source, and it always will be. If it's useful to you, you can buy me some compute.
+
+<p align="center"><a href="https://buymeacoffee.com/thed1c"><img src="https://img.shields.io/badge/Buy%20me%20some%20compute-FFDD00?style=for-the-badge&amp;logo=buymeacoffee&amp;logoColor=black" alt="Buy me some compute" height="50"></a></p>

@@ -2,8 +2,7 @@
 
 **Status: built.** This is the design Nebula was built from (in the code it is still called "the cockpit", its working
 name; the package is `nebula/`). The build diary that followed it stays with the engine fork it was written in; the
-README says how to run every piece. Numbers quoted here come from the pages that measured them. The engine was called
-Strata-Lite when this was written; it is Impulse now (`impulse/`, `impulse-server`), and the names below are updated.
+README says how to run every piece. Numbers quoted here come from the pages that measured them.
 
 The cockpit is a new server above the Impulse engine. It gives one person, on one PC, an assistant that picks how
 hard the model thinks, escalates to a bigger model when the local one is stuck, carries the conversation across that
