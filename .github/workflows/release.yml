@@ -1,0 +1,132 @@
+# One-click installers for Nebula EH (design decision 2026-10-20: "one click install on Windows and Linux").
+#   Linux:   nebula-eh-<version>-linux-x86_64.run   (run or double-click; per-user; no root, no Python, no internet)
+#   Windows: Nebula-EH-Setup-<version>.exe           (per-user; Start menu + desktop icon; uninstaller)
+# Impulse is built here from impulse/ with CUDA 13.2.2 from NVIDIA's redistributable archives (greenfield/cuda_redist.py),
+# for RTX 30 / 40 / 50 (86, 89, 120a) at an AVX2 baseline; Linux on Ubuntu 22.04 so it runs on glibc 2.35 and newer.
+# The installers are uploaded as this run's artifacts only: publishing a release is a deliberate step, not this workflow's.
+name: release
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]                        # a heavy build runs only when started on purpose (Actions minutes)
+
+concurrency:                            # a newer push replaces a running build
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  impulse-linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install ninja
+      - name: CUDA 13.2.2 (redistributable archives)
+        run: python greenfield/cuda_redist.py --platform linux-x86_64 --out "$RUNNER_TEMP/cuda"
+      - name: Build Impulse
+        run: |
+          # -DIMPULSE_FLASHNEXT=ON: impulse-fx and the Flash-Next engine library too (impulse-server depends on them)
+          cmake -S impulse -B build-impulse -G Ninja -DCMAKE_BUILD_TYPE=Release -DIMPULSE_PORTABLE=ON -DIMPULSE_FLASHNEXT=ON \
+            -DIMPULSE_FX_JOBS=4 -DCMAKE_CUDA_COMPILER="$RUNNER_TEMP/cuda/bin/nvcc" -DCUDAToolkit_ROOT="$RUNNER_TEMP/cuda"
+          cmake --build build-impulse --target impulse-server -j 4 -- -k 0
+      - run: python greenfield/impulse_dist.py --platform linux --build build-impulse --cuda "$RUNNER_TEMP/cuda" --out impulse-dist --require-fx
+      - run: tar -czf impulse-linux.tar.gz -C impulse-dist .         # keeps the wrapper's exec bit
+      - uses: actions/upload-artifact@v4
+        with: {name: impulse-linux, path: impulse-linux.tar.gz, retention-days: 7}
+
+  impulse-windows:
+    runs-on: windows-2022
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - uses: ilammy/msvc-dev-cmd@v1
+        with: {arch: x64}
+      - run: pip install ninja
+      - name: CUDA 13.2.2 (redistributable archives)
+        run: python greenfield/cuda_redist.py --platform windows-x86_64 --out "$env:RUNNER_TEMP\cuda"
+      - name: Build Impulse
+        run: |
+          $env:CUDA_PATH = "$env:RUNNER_TEMP\cuda"
+          cmake -S impulse -B build-impulse -G Ninja -DCMAKE_BUILD_TYPE=Release -DIMPULSE_PORTABLE=ON `
+            "-DCMAKE_CUDA_COMPILER=$env:RUNNER_TEMP\cuda\bin\nvcc.exe" "-DCUDAToolkit_ROOT=$env:RUNNER_TEMP\cuda" `
+            "-DCMAKE_CXX_FLAGS_INIT=/Dfseeko=_fseeki64"
+          # (fseeko: Impulse's LoRA loader uses the POSIX name; MSVC's is _fseeki64. A build flag here, not a change to
+          #  Impulse's code, which is another thread's. Its (off_t) cast is 32-bit on Windows: adapters over 2 GB wait for that fix.)
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build build-impulse --target impulse-server -j 4 -- -k 0     # every error in one pass, not the first only
+      - run: python greenfield/impulse_dist.py --platform windows --build build-impulse --cuda "$env:RUNNER_TEMP\cuda" --out impulse-dist
+      - uses: actions/upload-artifact@v4
+        with: {name: impulse-windows, path: impulse-dist, retention-days: 7}
+
+  linux-installer:
+    needs: impulse-linux
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - uses: actions/download-artifact@v4
+        with: {name: impulse-linux}
+      - run: mkdir impulse-dist && tar -xzf impulse-linux.tar.gz -C impulse-dist
+      - run: python greenfield/package.py --platform linux --impulse impulse-dist --out dist --work "$RUNNER_TEMP/pkg"
+      - name: Install it on a clean Ubuntu 22.04 and 24.04 (no Python, no internet) and open Nebula
+        run: |
+          for img in ubuntu:22.04 ubuntu:24.04; do
+            docker run --rm --network none -v "$PWD/dist:/dist:ro" -e NEBULA_NO_OPEN=1 "$img" sh -ec '
+              useradd -m u; su u -c "sh /dist/*.run"
+              # everything Impulse links is inside, but the NVIDIA driver (libcuda), which a runner has not
+              M=$(LD_LIBRARY_PATH=/home/u/.local/share/nebula-eh/impulse ldd /home/u/.local/share/nebula-eh/impulse/impulse-server.bin | grep "not found" || true)
+              [ "$(echo "$M" | grep -v libcuda.so.1 | grep -c .)" = 0 ] || { echo "missing: $M"; exit 1; }
+              su u -c "~/.local/share/nebula-eh/nebula-open"
+              su u -c "~/.local/share/nebula-eh/python/bin/python3 -c \"import urllib.request; print(urllib.request.urlopen(\\\"http://127.0.0.1:8090/api/signin\\\").status)\""
+              su u -c "~/.local/share/nebula-eh/python/bin/python3 -c \"import iroh, psutil, fastembed, qdrant_client; print(\\\"deps ok\\\")\""'
+            echo "$img: installed and serving"
+          done
+      - uses: actions/upload-artifact@v4
+        with: {name: nebula-eh-linux, path: "dist/*.run*", retention-days: 14, compression-level: 0}
+
+  windows-installer:
+    needs: impulse-windows
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - uses: actions/download-artifact@v4
+        with: {name: impulse-windows, path: impulse-dist}
+      - run: python greenfield/package.py --platform windows --impulse impulse-dist --out dist --work "$env:RUNNER_TEMP\pkg"
+      - name: Setup.exe (NSIS)
+        run: |
+          $ver = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path $nsis)) { choco install nsis -y --no-progress; $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe" }
+          Push-Location dist
+          & $nsis -V2 -NOCD "-DVERSION=$ver" "-DPAYLOAD=$env:RUNNER_TEMP\pkg\payload" ..\greenfield\windows\installer.nsi
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $f = Get-Item "Nebula-EH-Setup-$ver.exe"
+          "$((Get-FileHash $f -Algorithm SHA256).Hash.ToLower())  $($f.Name)" | Out-File -Encoding ascii "$($f.Name).sha256"
+          Pop-Location
+      - name: Install it silently and start Nebula
+        run: |
+          $setup = Get-Item dist\Nebula-EH-Setup-*.exe
+          Start-Process $setup.FullName -ArgumentList "/S" -Wait
+          $dir = "$env:LOCALAPPDATA\Programs\Nebula EH"
+          if (-not (Test-Path "$dir\python\python.exe")) { throw "not installed" }
+          if (-not (Test-Path "$env:APPDATA\nebula\nebula.json")) { throw "no config" }
+          foreach ($f in "impulse-server.exe","cudart64_13.dll","cublas64_13.dll","cublasLt64_13.dll","vcomp140.dll","msvcp140.dll") {
+            if (-not (Test-Path "$dir\impulse\$f")) { throw "impulse\$f missing" } }   # nvcuda.dll is the driver's: none on a runner
+          $p = Start-Process "$dir\python\python.exe" -ArgumentList "-m","nebula","--config","$env:APPDATA\nebula\nebula.json" -WorkingDirectory $env:TEMP -PassThru
+          $ok = $false
+          foreach ($i in 1..60) { try { $r = Invoke-WebRequest http://127.0.0.1:8090/api/signin -UseBasicParsing; $ok = $true; break } catch { Start-Sleep 1 } }
+          Stop-Process $p -Force
+          if (-not (Test-Path "$env:APPDATA\nebula\nebula.sqlite3")) { throw "the ledger is not beside the config" }
+          if (-not $ok) { throw "Nebula did not answer" }
+          & "$dir\python\python.exe" -c "import iroh, psutil, fastembed, qdrant_client, webview; print('deps ok')"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Start-Process "$dir\Uninstall Nebula EH.exe" -ArgumentList "/S" -Wait
+      - uses: actions/upload-artifact@v4
+        with: {name: nebula-eh-windows, path: "dist/Nebula-EH-Setup-*", retention-days: 14, compression-level: 0}

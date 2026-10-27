@@ -1,0 +1,37 @@
+Nebula
+Copyright (c) 2026 thed1c. MIT License (LICENSE).
+
+This product includes code from Strata (https://github.com/Niko1221/Strata),
+Copyright (c) 2026 Niko1221 and the Strata contributors, MIT License.
+The files are in nebula/_vendor/strata_serve/, with Strata's licence text
+(nebula/_vendor/strata_serve/LICENSE) and their provenance (UPSTREAM).
+
+Impulse 0.1.1 (impulse/), the engine that ships with Nebula, is part of this repository under the same MIT License,
+Copyright (c) 2026 thed1c (impulse/LICENSE). It includes Strata's CPU expert
+pool (impulse/flashnext/, Strata's tree, with impulse/third_party/strata/UPSTREAM;
+Copyright (c) 2026 Niko1221 and the Strata contributors, MIT), ggml's ggml-common.h (MIT) and builds against llama.cpp
+(MIT): impulse/THIRD_PARTY_NOTICES.md.
+
+The page's web fonts (nebula/ui/fonts/: Big Shoulders Display, Figtree, JetBrains Mono) are under the SIL Open
+Font License 1.1, with their copyright notices in nebula/ui/fonts/LICENSES.txt.
+
+Nebula can route to a separately installed NVIDIA Personal AI Router on the same machine (shown in Nebula as a
+Gravity upstream), and runs that router's backend services (built from its source, not included in this repository)
+for model servers on your network. They are NVIDIA's, under the Apache License 2.0
+(https://github.com/NVIDIA/Personal-AI-Router); a server bundle that carries them carries their LICENSE and NOTICE.
+
+Halo's model files (nebula/assets/halo/) are LoRA adapters for Liquid AI's LFM2.5-1.2B-Instruct (Copyright Liquid AI),
+modified by Nebula and distributed under the LFM Open License v1.0 (nebula/assets/halo/LICENSE-LFM-1.0); what was changed
+is in nebula/assets/halo/README.md. The base model is not included: Nebula fetches Liquid's own file from its repository.
+
+The installers carry llama.cpp (https://github.com/ggml-org/llama.cpp, MIT, Copyright (c) 2023-2026 The ggml
+authors): linked into Impulse's impulse-server, and its llama-server in halo/ as Halo's fallback runtime. Its licence
+text is in app/LICENSE-llama.cpp and halo/LICENSE.
+
+The Linux installer carries NVIDIA Personal AI Router's backend services in pair/ (built from
+https://github.com/NVIDIA/Personal-AI-Router, Apache License 2.0, Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES), with
+their LICENSE and third-party notices beside them. At install it fetches NVIDIA OpenShell 0.1.4
+(https://github.com/NVIDIA/OpenShell, Apache License 2.0) into openshell/ when OpenShell is not already installed, and,
+with Docker, OpenShell's images and the Gravity gateway's image (iroh-relay, https://github.com/n0-computer/iroh,
+Apache-2.0 or MIT), Lookup's vector store (Qdrant, Apache-2.0) and its models (BAAI/bge-small-en-v1.5, MIT;
+Xenova/ms-marco-MiniLM-L-6-v2, Apache-2.0), each from its own publisher.

@@ -1,0 +1,100 @@
+Strata's CPU expert pool: where Impulse's copy went (One Engine P0, 2026-10-25).
+
+Since One Engine P0 there is ONE copy of the pool: flashnext/src/kernels/cpu and flashnext/include (Strata's tree,
+impulse/flashnext/IMPULSE.md), with Impulse's additions merged in. impulse/CMakeLists.txt builds impulse_pool from it, and
+flashnext/CMakeLists.txt builds strata_kernels_cpu from it. This folder keeps only Strata's licence (LICENSE, the same text
+as flashnext/LICENSE) and this record. impulse/third_party/ggml/ (ggml-common.h, identical to
+flashnext/third_party/ggml/) went too.
+
+Each line: the file's path here before P0 -> its path now (which version the one copy keeps). Checked bit for bit: both
+trees' pool tests under STRATA_NO_NVFP4_VNNI / STRATA_NO_NVFP4_512, and every gate/up and down row function of the old
+flashnext copy, the old Impulse copy and the merged copy on the same inputs (Q4_0, Q4_K/Q8_0, IQ3_XXS/IQ4_NL, a real
+NVFP4 pack blob, Impulse's SwiGLU_ggml / GeGLU NVFP4 with per-job scales).
+
+third_party/strata/include/strata/core/progress.hpp  ->  flashnext/include/strata/core/progress.hpp  (the same file in both copies)
+third_party/strata/include/strata/kernels/cpu/expert.hpp  ->  flashnext/include/strata/kernels/cpu/expert.hpp  (flashnext's (adds the static_assert against core/geometry.hpp))
+third_party/strata/include/strata/kernels/cpu/expert_layout.hpp  ->  flashnext/include/strata/kernels/cpu/expert_layout.hpp  (the same file in both copies)
+third_party/strata/include/strata/kernels/cpu/iq_avx1.hpp  ->  flashnext/include/strata/kernels/cpu/iq_avx1.hpp  (the same file in both copies)
+third_party/strata/include/strata/kernels/cpu/iq_avx2.hpp  ->  flashnext/include/strata/kernels/cpu/iq_avx2.hpp  (the same file in both copies)
+third_party/strata/include/strata/kernels/cpu/iq_avx512.hpp  ->  flashnext/include/strata/kernels/cpu/iq_avx512.hpp  (the same file in both copies)
+third_party/strata/include/strata/kernels/cpu/kq_avx1.hpp  ->  flashnext/include/strata/kernels/cpu/kq_avx1.hpp  (the same file in both copies)
+third_party/strata/include/strata/kernels/cpu/kq_avx2.hpp  ->  flashnext/include/strata/kernels/cpu/kq_avx2.hpp  (the same file in both copies)
+third_party/strata/include/strata/kernels/cpu/native_expert.hpp  ->  flashnext/include/strata/kernels/cpu/native_expert.hpp  (merged: flashnext's + Impulse's NativeAct, separate_down, kNativeMaxFF, kNativeHBytes 2048, per-job scales, nvfp4_rows_exact; the pack tail (tail_off) stays)
+third_party/strata/include/strata/kernels/cpu/numa_pool.hpp  ->  flashnext/include/strata/kernels/cpu/numa_pool.hpp  (the same file in both copies)
+third_party/strata/include/strata/kernels/cpu/pool.hpp  ->  flashnext/include/strata/kernels/cpu/pool.hpp  (merged: flashnext's (preview_numa_split, STRATA_POOL_FUSE) + Impulse's ExpertJobMulti down/hidden/s_gate/s_up/s_down, numa_split_possible, kPoolFF)
+third_party/strata/include/strata/platform/aux_cpus.hpp  ->  flashnext/include/strata/platform/aux_cpus.hpp  (flashnext's (adds spread_current_thread, extras/wddm-pin))
+third_party/strata/kernels/cpu/expert.cpp  ->  flashnext/src/kernels/cpu/expert.cpp  (Impulse's (upstream #2324: lazy statics))
+third_party/strata/kernels/cpu/expert_layout.cpp  ->  flashnext/src/kernels/cpu/expert_layout.cpp  (merged: flashnext's (arm64 guards) + Impulse's native stubs' scale/act arguments)
+third_party/strata/kernels/cpu/iq_avx1.cpp  ->  flashnext/src/kernels/cpu/iq_avx1.cpp  (Impulse's (upstream #2638: IQ4_NL declined on AVX-only CPUs))
+third_party/strata/kernels/cpu/iq_avx2.cpp  ->  flashnext/src/kernels/cpu/iq_avx2.cpp  (the same file in both copies)
+third_party/strata/kernels/cpu/iq_avx2_rows.inl  ->  flashnext/src/kernels/cpu/iq_avx2_rows.inl  (the same file in both copies)
+third_party/strata/kernels/cpu/iq_avx512.cpp  ->  flashnext/src/kernels/cpu/iq_avx512.cpp  (Impulse's (upstream #2324: lazy statics))
+third_party/strata/kernels/cpu/kq_avx1.cpp  ->  flashnext/src/kernels/cpu/kq_avx1.cpp  (the same file in both copies)
+third_party/strata/kernels/cpu/kq_avx2.cpp  ->  flashnext/src/kernels/cpu/kq_avx2.cpp  (the same file in both copies)
+third_party/strata/kernels/cpu/native_expert.cpp  ->  flashnext/src/kernels/cpu/native_expert.cpp  (merged: Impulse's (exact acts, IMPULSE_NVFP4_512, per-job scales) + flashnext's NVFP4 pack tail (a SwiGLU pack blob only))
+third_party/strata/kernels/cpu/pool.cpp  ->  flashnext/src/kernels/cpu/pool.cpp  (merged: flashnext's (decide_pool / arena preview, STRATA_POOL_SMT/FUSE/UMWAIT) + Impulse's job scales on every path (Q2 and mode 7 too), separate_down, hidden, numa_split_possible)
+third_party/strata/kernels/cpu/pool_affinity_linux.hpp  ->  flashnext/src/kernels/cpu/pool_affinity_linux.hpp  (flashnext's (adds the macOS no-op affinity))
+third_party/strata/kernels/cpu/pool_affinity_win.hpp  ->  flashnext/src/kernels/cpu/pool_affinity_win.hpp  (the same file in both copies)
+third_party/strata/kernels/cpu/q2_avx1.cpp  ->  flashnext/src/kernels/cpu/q2_avx1.cpp  (Impulse's (upstream #2324: lazy statics))
+third_party/strata/kernels/cpu/q2_avx2.cpp  ->  flashnext/src/kernels/cpu/q2_avx2.cpp  (Impulse's (upstream #2324: lazy statics))
+third_party/strata/kernels/cpu/q2_avx2_rows.inl  ->  flashnext/src/kernels/cpu/q2_avx2_rows.inl  (the same file in both copies)
+third_party/strata/kernels/cpu/nvfp4_avx512.cpp  ->  flashnext/src/kernels/cpu/nvfp4_avx512.cpp  (the same file in both copies)
+third_party/strata/kernels/cpu/nvfp4_avx512bw.cpp  ->  flashnext/src/kernels/cpu/nvfp4_avx512bw.cpp  (the same file in both copies)
+third_party/strata/kernels/cpu/nvfp4_avx2.cpp  ->  flashnext/src/kernels/cpu/nvfp4_avx2.cpp  (the same file in both copies)
+third_party/strata/include/strata/kernels/cpu/nvfp4_avx512.hpp  ->  flashnext/include/strata/kernels/cpu/nvfp4_avx512.hpp  (the same file in both copies)
+third_party/strata/include/strata/kernels/cpu/nvfp4_avx2.hpp  ->  flashnext/include/strata/kernels/cpu/nvfp4_avx2.hpp  (the same file in both copies)
+
+third_party/ggml/ggml-common.h, LICENSE, VERSION.txt  ->  flashnext/third_party/ggml/  (the same files)
+tests/nvfp4_parity.cpp stays in impulse/tests/ (its counterpart is flashnext/src/kernels/cpu/nvfp4_avx512_parity.cpp).
+
+---- The record before P0 (paths are the old ones; the upstream column and sha256 still name each file's origin) ----
+
+Strata (https://github.com/Niko1221/Strata), MIT, at commit 61b3fb5d (2026-10-10): the CPU expert pool and its headers.
+Each line: path here, path upstream, sha256 of the upstream file, state.
+
+third_party/strata/include/strata/core/progress.hpp  include/strata/core/progress.hpp  cf0376eb23e2fd43a062c1fb40d3ac7885ef8283975051af51034f3f7182d622  unchanged
+third_party/strata/include/strata/kernels/cpu/expert.hpp  include/strata/kernels/cpu/expert.hpp  3085e7eb82f38e4a6de2053b38bc75ce9113465cc6e10205e8d933b5a51a709c  unchanged
+third_party/strata/include/strata/kernels/cpu/expert_layout.hpp  include/strata/kernels/cpu/expert_layout.hpp  d8fae0136edaa3d5e6af31e0ae65b5c502a78cced208441576b810a8b120fba9  unchanged
+third_party/strata/include/strata/kernels/cpu/iq_avx1.hpp  include/strata/kernels/cpu/iq_avx1.hpp  71ed249250e52d5f3e370becae54d4ac5255d0493bc7dfce513545bbd2a35cc1  unchanged
+third_party/strata/include/strata/kernels/cpu/iq_avx2.hpp  include/strata/kernels/cpu/iq_avx2.hpp  4278b917a3634435f4388ce26128d27502d4467c81460c4081fd8de1dbc8a848  unchanged
+third_party/strata/include/strata/kernels/cpu/iq_avx512.hpp  include/strata/kernels/cpu/iq_avx512.hpp  ede01ee7e474f5d816d9bc6ad6b0804cabd924c69b2b3d536d40f2432410841b  unchanged
+third_party/strata/include/strata/kernels/cpu/kq_avx1.hpp  include/strata/kernels/cpu/kq_avx1.hpp  af289c2fec6ec8e4946352dbbbcc25df41bb57468953589e4b5b7cfe1d0ddbda  unchanged
+third_party/strata/include/strata/kernels/cpu/kq_avx2.hpp  include/strata/kernels/cpu/kq_avx2.hpp  c4cd342ba0f2ffd34f6b5ac9c254c59d0a521370de0d7650f0c28e7a390b55dd  unchanged
+third_party/strata/include/strata/kernels/cpu/native_expert.hpp  include/strata/kernels/cpu/native_expert.hpp  711dcaf43608b7d607f05e17f81993356b6fe36f18bcfa64b1ca111e9eeab0bc  changed by Impulse
+third_party/strata/include/strata/kernels/cpu/numa_pool.hpp  include/strata/kernels/cpu/numa_pool.hpp  c9c32ef40da9867e6c1ec17e3b9b8cd80fb5f36a74163c6e9cdb3bc4c90378b0  from v0.2.2, changed by Impulse (numa-always: IMPULSE_NUMA_NODES, getcpu)
+third_party/strata/include/strata/kernels/cpu/pool.hpp  include/strata/kernels/cpu/pool.hpp  5f7e7ee3f48ce6505ad25975c320310e647551df3304a87052ce3c7e2b414936  changed by Impulse
+third_party/strata/include/strata/platform/aux_cpus.hpp  include/strata/platform/aux_cpus.hpp  5eb06395bdc552b821ba14c9e76da1a6b3baa3daaa532f8eeffbe8d1d9038804  unchanged
+third_party/strata/kernels/cpu/expert.cpp  src/kernels/cpu/expert.cpp  31b7b1a628e29f22bce3e39e69efe968298066d08383d8292c9ea1279bee1cfe  changed by Impulse
+third_party/strata/kernels/cpu/expert_layout.cpp  src/kernels/cpu/expert_layout.cpp  62db670be4d4409dfd68fd28cb2db3f8c4b08f1e5c6416e6bd563dc5fda6f64e  changed by Impulse (the native stubs' NVFP4 scale arguments)
+third_party/strata/kernels/cpu/iq_avx1.cpp  src/kernels/cpu/iq_avx1.cpp  af3a4b7fa9ae4eb61cbc99e9ea49d5bae2374521a60a49fd34fc4fd569a7fe03  changed by Impulse
+third_party/strata/kernels/cpu/iq_avx2.cpp  src/kernels/cpu/iq_avx2.cpp  58e9c7e49b8158f698cda59aff06c245f62aaecd33556b1e88e234140890fded  unchanged
+third_party/strata/kernels/cpu/iq_avx2_rows.inl  src/kernels/cpu/iq_avx2_rows.inl  94da07f977ef20288d65747604f9c3a7a87cba3237f36d216dbb624bddd9be23  unchanged
+third_party/strata/kernels/cpu/iq_avx512.cpp  src/kernels/cpu/iq_avx512.cpp  539256cc7cba4cc7673ec5a3122737ddd485ec4d0947fd13acda6fbdbefe4f0d  changed by Impulse
+third_party/strata/kernels/cpu/kq_avx1.cpp  src/kernels/cpu/kq_avx1.cpp  3e7b6c1dcc4b2df972704c0d69da5703cf4adad2aff391a151c336c9ee060640  unchanged
+third_party/strata/kernels/cpu/kq_avx2.cpp  src/kernels/cpu/kq_avx2.cpp  4e8f29b049af758a8174ad82c966aefc92e9c531c14646d8edd8244bc4851639  unchanged
+third_party/strata/kernels/cpu/native_expert.cpp  src/kernels/cpu/native_expert.cpp  d19ddcda58a1c94e23262ad6a7588a7180b86793a457dc9efef313dde318748b  changed by Impulse
+third_party/strata/kernels/cpu/pool.cpp  src/kernels/cpu/pool.cpp  4b9b8ec1eeaabca0524a3a4aef39907ad90583e798d1e03a2ae1f6318e9105bc  changed by Impulse
+third_party/strata/kernels/cpu/pool_affinity_linux.hpp  src/kernels/cpu/pool_affinity_linux.hpp  931848c9fb4a4bdb1ebbe9db47bff05428595231bcca65b66a5b7ec301f7cae0  changed by Impulse (numa-always: self-pin as pid 0 on EPERM)
+third_party/strata/kernels/cpu/pool_affinity_win.hpp  src/kernels/cpu/pool_affinity_win.hpp  63a3e8d6346d2887b6e139638ad74ab5ce005be20f6c0d4664c16938a84abe6f  unchanged
+third_party/strata/kernels/cpu/q2_avx1.cpp  src/kernels/cpu/q2_avx1.cpp  055a281bcb67dfd14a380cef8c05dd96a23795ed8f468f3e36543cc4a1d9566a  changed by Impulse
+third_party/strata/kernels/cpu/q2_avx2.cpp  src/kernels/cpu/q2_avx2.cpp  ce92563c3706433845aaee48488ccac2d817eb69ae1a48d44ea3a3be1c093dec  changed by Impulse
+third_party/strata/kernels/cpu/q2_avx2_rows.inl  src/kernels/cpu/q2_avx2_rows.inl  efc28c0975d03c276924dff7f29c26e3b6725c2718604db57e3dbe4250b8b7db  unchanged
+
+numa-always (2026-10-23): the NUMA-split pool of upstream 0.2.2 (#3201, 4bd59126's branch: per-node slices and
+counters, refusals, the automatic choice) merged into pool.cpp/pool.hpp, plus where the layout comes from inside a
+sandbox (IMPULSE_NUMA_NODES, sysfs, getcpu). Expert memory placement per node: see below.
+
+NVFP4 CPU rows (2026-10-24), from the strata-nvfp4 fork (https://github.com/sergqwer/strata-nvfp4, MIT, the same licence
+and copyright as Strata), our numa-always branch at d7fc0e12 - NOT Niko's upstream 61b3fb5d. Same line format; the
+sha256 is of the fork's file at d7fc0e12.
+
+third_party/strata/kernels/cpu/nvfp4_avx512.cpp  src/kernels/cpu/nvfp4_avx512.cpp  4271f7a29b2e67ad579a2b6ef34840d06cfc6d9362683d654b095b8167a77b96  unchanged
+third_party/strata/kernels/cpu/nvfp4_avx512bw.cpp  src/kernels/cpu/nvfp4_avx512bw.cpp  9191037fa09ebf445cfc812a2fe4d997baf5d4d0e267dce63e2655340e0ace8f  unchanged
+third_party/strata/kernels/cpu/nvfp4_avx2.cpp  src/kernels/cpu/nvfp4_avx2.cpp  af67580a2af8b4d951339c1f3bd334abffbae1a6b942ef49e79b39feb6042bfe  unchanged
+third_party/strata/include/strata/kernels/cpu/nvfp4_avx512.hpp  include/strata/kernels/cpu/nvfp4_avx512.hpp  aa15bbb3280000c30c75b294dcdbf033d1d29655fda364d7975057446d124772  unchanged
+third_party/strata/include/strata/kernels/cpu/nvfp4_avx2.hpp  include/strata/kernels/cpu/nvfp4_avx2.hpp  d11a3f774ff31cc5b722e5eff8d6b4c708c88051040938efaf12a1a54a8ff9b9  unchanged
+tests/nvfp4_parity.cpp  src/kernels/cpu/nvfp4_avx512_parity.cpp  bccb19295670136e30452dc80cd932d17536765c3af621b19af6fdd4dc85a5b6  changed by Impulse (VNNI rows checked without VBMI; an Impulse SwiGLU_ggml expert bit for bit)
+third_party/strata/kernels/cpu/native_expert.cpp  src/kernels/cpu/native_expert.cpp  37e3c0438906862b4ade630f326f76e299a7a0f1a010a8a5b153db17cc75f80b  the fork's NVFP4 dispatch (nvfp4_wide, kNvfp4Type, the gate/up and down branches) merged into Impulse's copy above; the scales come per job (ExpertJobMulti::s_gate/s_up/s_down from ffn_*_exps.scale), not from the fork's blob tail; Impulse's exact activations take the AVX2 rows (bit-equal to ggml) unless IMPULSE_NVFP4_512=1
+
+Expert memory placement per node (2026-10-24) is Impulse's own code (src/lite/numa_place.hpp, after the fork's
+6d63fe1e and 9c2ed715 in src/core/expert_source.cpp), not a copied file.

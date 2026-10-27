@@ -1,0 +1,14 @@
+# Impulse Flash-Next as a Nebula engine image: the reference engine's image (the Strata server's Python + Pillow at
+# /opt/strata-serve/.venv, the CUDA runtime at /opt/cuda/lib, strata-vision and the expert profile under /opt/strata-nvfp4,
+# the selfpin preload) plus Impulse in /opt/impulse/bin - the layout the reference engine runs since One Engine P3 (2026-10-25,
+# image nebula-flashnext:impulse-36f62a1-r768). The command is impulse-fx (nebula/flashnext.py writes it):
+#   /opt/impulse/bin/impulse-fx -m /models/<pack> --host 127.0.0.1 --port <port>
+#       --fx-image-python /opt/strata-serve/.venv/bin/python --fx-config-json <run config>   (or --fx-config <file>)
+# Build next to a bin/ holding a -DIMPULSE_FLASHNEXT=ON build's impulse-fx, libimpulse_fx.so and libstrata_kq.so
+# (impulse-server too, as P3's image has it; impulse-fx runs a pack without it):
+#   podman build -t nebula-impulse-flashnext:<commit> -f Containerfile .
+# BASE is the image the reference engine ran before P3 (built 2026-10-24 on the test server; P3's image is this base + /opt/impulse/bin).
+ARG BASE=localhost/nebula-flashnext:strata-nvfp4-v0.1.44.1-nvfp4.2-numa-5fbfb2a7-r768
+FROM ${BASE}
+COPY bin/ /opt/impulse/bin/
+LABEL ai.nebula.engine=impulse-flashnext

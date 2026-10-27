@@ -1,0 +1,14 @@
+{
+  "_note": "Optional: Nebula watching another Switchyard by its URL, read only: no model calls, nothing written there (nebula/switchyard.py). Try it with: python3 -m nebula.examples.fake_router",
+  "host": "127.0.0.1",
+  "port": 18194,
+  "ledger": null,
+  "monitor": true,
+  "watch": {
+    "url": "http://127.0.0.1:18300",
+    "poll_seconds": 2
+  },
+  "app": {
+    "title": "Nebula"
+  }
+}

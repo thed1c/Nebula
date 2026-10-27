@@ -1,0 +1,34 @@
+name: tests
+
+on:
+  workflow_dispatch:                    # by hand only (Actions minutes); Nebula is tested locally before every merge
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: python -m pip install ".[monitor]"
+      - name: Unit tests (no engine, no OpenShell, no network beyond loopback)
+        run: python -m unittest discover -s nebula/tests -t . -v
+      - name: Page and desktop scripts parse
+        run: |
+          python - <<'PY'
+          import re, pathlib
+          html = pathlib.Path("nebula/ui/index.html").read_text()
+          pathlib.Path("page.js").write_text("\n".join(re.findall(r"<script[^>]*>(.*?)</script>", html, re.S)))
+          PY
+          node --check page.js
+          node --check nebula/desktop/main.js

@@ -1,0 +1,83 @@
+{
+ "cwd": "/opt/strata-nvfp4",
+ "tokenizer": "/models/orca-flashnext-nvfp4-gptq-strata-2692e6a/pack/tokenizer",
+ "model_name": "flash-next",
+ "aliases": [
+  "flash-next-alias",
+  "orcarouter-qwen3.8-flash-next-uncensored-nvfp4-gptq",
+  "FlashNext"
+ ],
+ "log": "/sandbox/engine.log",
+ "lib_dirs": [
+  "/opt/cuda/lib"
+ ],
+ "host": "127.0.0.1",
+ "port": 18123,
+ "gpu": [
+  0,
+  1
+ ],
+ "gpu_order": "as_given",
+ "layer_split": "16",
+ "parallel": 1,
+ "open_browser": false,
+ "api_monitor": false,
+ "idle_unload_s": 0,
+ "lazy_load": false,
+ "env": {
+  "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+  "STRATA_PREFILL_LEND_PCT": "95",
+  "IMPULSE_NUMA_NODES": "0=0-17,36-53;1=18-35,54-71"
+ },
+ "args": [
+  "--pack",
+  "/models/orca-flashnext-nvfp4-gptq-strata-2692e6a/pack",
+  "--native",
+  "/models/orca-flashnext-nvfp4-gptq-strata-2692e6a/orca-nvfp4-dense.gguf",
+  "--expert-profile",
+  "/opt/strata-nvfp4/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto:32768",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "/models/orca-flashnext-nvfp4-gptq-strata-2692e6a/mtp",
+  "--max-context",
+  "262144",
+  "--kv",
+  "int8",
+  "--vram-reserve-mib",
+  "768",
+  "--vram-reserve-later-mib",
+  "768",
+  "--pool-workers",
+  "34",
+  "--kv-resident",
+  "20480",
+  "--conversation-cache-mib",
+  "65536",
+  "--conversation-cache-slots",
+  "16",
+  "--native-dense-gguf",
+  "/models/orca-flashnext-nvfp4-gptq-strata-2692e6a/orca-nvfp4-dense.gguf",
+  "--ple-gguf",
+  "/models/orca-flashnext-nvfp4-gptq-strata-2692e6a/ple-fp8.gguf",
+  "--embd-gguf",
+  "/models/orca-flashnext-nvfp4-gptq-strata-2692e6a/token-embd-bf16.gguf",
+  "--vision",
+  "--pcie-frac",
+  "0.04"
+ ],
+ "vision": {
+  "exe": "/opt/strata-nvfp4/build-vision/bin/strata-vision",
+  "mmproj": "/models/huihui-qwen38-abliterated-ud-q4kxl-test/mmproj-model-bf16.gguf",
+  "model": "/models/orca-flashnext-nvfp4-gptq-strata-2692e6a/orca-nvfp4-dense.gguf",
+  "gpu": false,
+  "max_tokens": 1024,
+  "threads": 16
+ }
+}

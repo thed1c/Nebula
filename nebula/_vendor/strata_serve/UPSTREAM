@@ -1,0 +1,14 @@
+Vendored from Strata, https://github.com/Niko1221/Strata (MIT, LICENSE in this folder).
+Upstream commit: 61b3fb5dd3f1e8ec09cf7e4e05208bc6d3c46406 (2026-10-10), path serve/<file>.
+Taken unchanged except each file's imports of the others (from serve.X -> from .X); sha256 of the upstream files:
+
+b21f0413141f87bd08eb084420ddc597b8cbc008b64b14b916db3de365595b4d  serve/frontend.py
+5215aafab91eea1b77b4c81a1405731cd175fcbdcc9b0e56aa64db701a7100f4  serve/responses.py
+659c8e3c7db7d51c939870f843b2350f3efcf2ce8f1ff4b4372db4631e39b77f  serve/mcp.py
+eecc221d4bad6222e61731ea4385b7050d47a8f2135f0a8ddabca1bc141ffd33  serve/telemetry.py
+874d33da4aff553c12da2ded297a6856dce48e09877167f9c387b667cd7b060f  serve/keepawake.py
+8fff65cf850e108b84ab06c3fb44a68b947b0f4834ce5880139ada5dfb11a749  serve/winjob.py
+ecc6afa3b44461e120d6901822a1b0db96bddf59324fefe8faa8f2cad48b7157  serve/mcp_fake_server.py
+
+To bring in a newer upstream: copy the files from a Strata checkout, re-apply the two import lines
+(responses.py: from .frontend import ...; mcp.py: from .winjob import ...), run the tests, update this file.

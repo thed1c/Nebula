@@ -1,0 +1,6 @@
+# A bare server for the household test: Debian with SSH and Python (no Nebula, no PAIR; the install brings both).
+FROM python:3.11-slim-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-server procps \
+    && rm -rf /var/lib/apt/lists/* && mkdir -p /run/sshd \
+    && useradd -m -d /var/owner -s /bin/sh owner && mkdir -p /var/owner/.ssh && chown -R owner /var/owner/.ssh && chmod 700 /var/owner/.ssh
+CMD ["/usr/sbin/sshd", "-D", "-e"]

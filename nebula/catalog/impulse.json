@@ -1,0 +1,116 @@
+{
+ "_note": "The models offered for Impulse 0.1.1 on first run and in Deploy your own. Only models verified with Impulse (its docs/RUN.md, docs/BUILD.md, docs/LFM25.md, docs/QWEN36.md). Edit here; the order is the order shown. needs: a NVIDIA card with at least gpu_mb of memory, ram_mb of system RAM (Impulse keeps the experts in RAM, a cache of them on the card), disk_mb free. friends: offered on a friend's path (joining by an invite); the owner sees every model. recommend: the order in which one model is recommended (the first that fits this computer).",
+ "engine": "impulse",
+ "models": [
+  {
+   "id": "lfm25-24b",
+   "name": "LFM2.5 24B",
+   "maker": "Liquid AI",
+   "about": "Quick and light: answers fast on a 8 GB card. Text only.",
+   "repo": "LiquidAI/LFM2.5-24B-A2B-GGUF",
+   "revision": "0912d33141f77e10705345a6732bfd83f0252fdc",
+   "file": "LFM2.5-24B-A2B-QAD-Q4_0.gguf",
+   "download_gb": 13.6,
+   "needs": {
+    "gpu_mb": 8000,
+    "ram_mb": 24000,
+    "disk_mb": 15000
+   },
+   "context": 32768,
+   "verified": "impulse/docs/LFM25.md (the official checkpoint; its hash in impulse/profiles/lfm25-qad-q4_0.json)",
+   "friends": true,
+   "variants": {
+    "standard": {},
+    "uncensored": {
+     "repo": "AtomicChat/LFM2.5-24B-A2B-Uncensored-GGUF",
+     "revision": "1acb8f6eb027d85b7771dcc9eb68817aa480e9c8",
+     "file": "LFM2.5-24B-A2B-Uncensored-AD-Q4_K_M.gguf",
+     "download_gb": 15.4,
+     "content": "uncensored build",
+     "source": "impulse/docs/LFM25.md: Impulse's default LFM2.5 file",
+     "maker": "Liquid AI (AtomicChat's uncensored build)"
+    }
+   }
+  },
+  {
+   "id": "gemma4-26b",
+   "name": "Gemma 4 26B",
+   "maker": "Google (HauhauCS's QAT build)",
+   "about": "The all-rounder: thoughtful answers, reads pictures, fast with its drafter. Needs a 12 GB card.",
+   "repo": "HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP",
+   "file": "Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf",
+   "mtp": "mtp-gemma-4-26B-A4B-it.gguf",
+   "mmproj": "mmproj-Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-BF16.gguf",
+   "download_gb": 18.3,
+   "needs": {
+    "gpu_mb": 11500,
+    "ram_mb": 32000,
+    "disk_mb": 20000
+   },
+   "context": 65536,
+   "content": "uncensored build",
+   "verified": "impulse/docs/BUILD.md and docs/RUN.md (the model, its MTP drafter and its projector)",
+   "friends": true,
+   "variants": {
+    "uncensored": {},
+    "standard": {
+     "repo": "google/gemma-4-26B-A4B-it-qat-q4_0-gguf",
+     "revision": "d1c082be9cf3c8a514acf63b8761f4b41935842e",
+     "file": "gemma-4-26B_q4_0-it.gguf",
+     "mmproj": "gemma-4-26B-it-mmproj.gguf",
+     "mtp_repo": "HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP",
+     "download_gb": 15.9,
+     "content": null,
+     "source": "Google's own QAT Q4_0; the MTP head is gemma-4-26B-A4B-it's",
+     "maker": "Google (its own QAT build)"
+    }
+   }
+  },
+  {
+   "id": "qwen36-35b",
+   "name": "Qwen3.6 35B",
+   "maker": "Alibaba (HauhauCS's build)",
+   "about": "The biggest: strongest at code and long documents, reads pictures. Needs a 16 GB card and plenty of RAM.",
+   "repo": "HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive",
+   "file": "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_P.gguf",
+   "mmproj": "mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf",
+   "download_gb": 24.3,
+   "needs": {
+    "gpu_mb": 15500,
+    "ram_mb": 48000,
+    "disk_mb": 26000
+   },
+   "context": 65536,
+   "content": "uncensored build",
+   "verified": "impulse/docs/BUILD.md and docs/QWEN36.md (the model and its projector; its MTP drafter is read out of another file with a tool, so it runs here without one)",
+   "friends": true,
+   "variants": {
+    "uncensored": {},
+    "standard": {
+     "repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+     "revision": "a483e9e6cbd595906af30beda3187c2663a1118c",
+     "file": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+     "mmproj": "mmproj-F16.gguf",
+     "download_gb": 23.0,
+     "content": null,
+     "source": "the official Qwen3.6-35B-A3B, unsloth's Q4_K_M (impulse/docs/QWEN36.md: any qwen35moe GGUF)",
+     "maker": "Alibaba (unsloth's Q4_K_M of the official model)"
+    }
+   }
+  }
+ ],
+ "release": {
+  "_note": "Impulse 0.1.1's builds, for Nebula to download when impulse-server is not on this computer: per platform the URL, its sha256 and the binary's name in the archive. Empty until the build is published.",
+  "version": "0.1.1",
+  "builds": {}
+ },
+ "recommend": [
+  "gemma4-26b",
+  "lfm25-24b"
+ ],
+ "variants": {
+  "standard": "Standard: the makers' own release; it declines some requests",
+  "uncensored": "Uncensored: answers anything, for adults"
+ },
+ "default_variant": "standard"
+}

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nebula-eh"
+version = "0.1.3"
+description = "Nebula: your own AI environment above local engines, cloud providers and CLIs (router, agents, ledger, live page)."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = ["jinja2>=3.1"]
+
+[project.optional-dependencies]
+monitor = ["psutil>=5.9"]
+app = ["pywebview>=5"]
+gravity = ["iroh==1.1.0"]                       # Nebula-to-Nebula over iroh (nebula/gravity.py)
+lookup = ["qdrant-client>=1.12", "fastembed>=0.5"]   # Lookup's library: its own Qdrant, local embeddings (nebula/rag)
+docling = ["docling>=2.40"]                     # Lookup reads PDF, Word, PowerPoint, Excel and images
+
+[project.scripts]
+nebula = "nebula.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["nebula*"]
+
+[tool.setuptools.package-data]
+nebula = ["ui/*.html", "ui/fonts/*", "catalog/*.json", "assets/halo/*", "app/*.svg", "app/*.ico", "examples/*.json", "desktop/*.js", "desktop/*.json", "_vendor/strata_serve/LICENSE",
+          "_vendor/strata_serve/UPSTREAM"]

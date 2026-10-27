@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+build/
+dist/
+node_modules/
+*.sqlite3
+*.sqlite3-*
+cockpit-keys/
+cockpit-work/
+*.look.json
+*.routing.json
+
+# test leftovers
+*.sqlite3.lock
+*.v0.bak

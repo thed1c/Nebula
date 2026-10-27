@@ -1,0 +1,894 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "router-status-v1",
+  "title": "Router status v1: what a Nebula reads to watch another router",
+  "type": "object",
+  "required": [
+    "capacity",
+    "in_flight_calls"
+  ],
+  "properties": {
+    "capacity": {
+      "type": "object",
+      "required": [
+        "destinations"
+      ],
+      "properties": {
+        "destinations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "routes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "slots": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "busy": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "queued": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "slot_context": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "avg_call_seconds": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "unavailable": {
+                "type": [
+                  "string",
+                  "boolean",
+                  "null"
+                ]
+              },
+              "free": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "measured": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "queued_by_class": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parking": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "registry": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "counters": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "decisions": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": "integer"
+              }
+            },
+            "agree": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "differ": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "parked": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          }
+        },
+        "last": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "at": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "caller": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "actor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "class": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "candidates": {
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "rank": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pick": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "selected": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "actual": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agree": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "wait_s": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "est_tokens": {
+              "type": [
+                "integer",
+                "number",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "routes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "base_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ready": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "model_file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expected_model_file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "switchyard": {
+      "type": "object",
+      "properties": {
+        "actors": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "errors": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "decisions": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "last": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "at": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "actor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "caller": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tier": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "switchyard_order": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              }
+            },
+            "selected_route": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "routed": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "applied": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "differs": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "upstream_failure": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "ms": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "in_flight_calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "actor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "caller": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "waiting": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "caller": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "actor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "class": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "external_destinations": {
+      "type": "object",
+      "properties": {
+        "destinations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "enabled": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "running": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "queued": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "callers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "class": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "admission": {
+      "type": "object",
+      "properties": {
+        "groups": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "size": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "busy": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "free": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "queued": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "on_hold": {
+                "type": [
+                  "string",
+                  "object",
+                  "boolean",
+                  "null"
+                ]
+              },
+              "holders": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "actor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "route": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "since": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "stats": {
+          "type": "object",
+          "properties": {
+            "waits": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "timeouts": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "longest_seconds": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "last": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "properties": {
+                "id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "actor": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "caller": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "class": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "group": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "route": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "outcome": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "seconds": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "behind": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "since": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "ended_at": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "route_policy": {
+      "type": "object",
+      "properties": {
+        "queues": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "routes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "slots": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "timeout_seconds": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "max_queued": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "routes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "priority": {
+                "type": [
+                  "integer",
+                  "number",
+                  "null"
+                ]
+              },
+              "group": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "configured_context": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "eligible": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        "counters": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": [
+              "integer",
+              "number"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

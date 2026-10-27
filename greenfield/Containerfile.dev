@@ -1,0 +1,9 @@
+# The development box for greenfield/devtest.sh: the stranger's image plus Nebula's dependencies, installed once at
+# build time (the only network use); the tests run with no network at all.
+FROM python:3.11-slim-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates iproute2 nodejs curl procps openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install -q "jinja2>=3.1" "psutil>=5.9" "iroh==1.1.0"
+RUN useradd -m -d /work stranger
+USER stranger
+WORKDIR /work

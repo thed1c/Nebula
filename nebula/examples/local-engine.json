@@ -1,0 +1,72 @@
+{
+ "_note": "Nebula in front of one local engine (any OpenAI-compatible server at :8080: llama.cpp, Strata-Lite, ...): fast and think tiers on it, four example agents, a fake MCP server, and the engine's journal followed for its problem lines (change the unit name to yours, or drop engine_logs).",
+ "port": 18190,
+ "ledger": "nebula.sqlite3",
+ "tiers": [
+  {
+   "name": "fast",
+   "engine": "http://127.0.0.1:8080",
+   "thinking": false
+  },
+  {
+   "name": "think",
+   "engine": "http://127.0.0.1:8080",
+   "thinking": true
+  }
+ ],
+ "agents": [
+  {
+   "name": "assistant",
+   "system": "You are Nebula's assistant. Answer plainly and briefly.",
+   "tier": "fast",
+   "default": true
+  },
+  {
+   "name": "terse",
+   "system": "Answer in exactly three words.",
+   "tier": "fast",
+   "ceiling": "think"
+  },
+  {
+   "name": "echoer",
+   "system": "When asked to call a tool, call fake__echo with the user's text, then report what it returned.",
+   "tier": "fast",
+   "tools": [
+    "fake"
+   ]
+  },
+  {
+   "name": "secretary",
+   "system": "You keep the conversation's notes: exact, brief, no new facts.",
+   "tier": "fast",
+   "event": true
+  }
+ ],
+ "mcp_servers": {
+  "fake": {
+   "command": "python3",
+   "args": [
+    "nebula/_vendor/strata_serve/mcp_fake_server.py"
+   ]
+  }
+ },
+ "app": {
+  "title": "Nebula",
+  "prevent_sleep": false
+ },
+ "engine_logs": [
+  {
+   "tier": "fast",
+   "command": [
+    "journalctl",
+    "--user-unit",
+    "my-engine.service",
+    "-f",
+    "-n",
+    "0",
+    "-o",
+    "cat"
+   ]
+  }
+ ]
+}

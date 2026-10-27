@@ -1,0 +1,8 @@
+# A stranger's machine for a from-scratch Nebula run: a stock image with the tools a newcomer has. Nebula itself is
+# not copied in: run.sh clones it from GitHub inside the container, the way a stranger would.
+FROM python:3.11-slim-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates tcpdump iproute2 nodejs curl procps \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd -m -d /work stranger
+USER stranger
+WORKDIR /work

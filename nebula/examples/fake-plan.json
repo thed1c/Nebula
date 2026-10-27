@@ -1,0 +1,64 @@
+{
+ "schema": "nebula-plan-v1",
+ "name": "home",
+ "classes": [
+  {
+   "name": "interactive",
+   "rank": 0,
+   "tolerance_s": 60
+  },
+  {
+   "name": "agent",
+   "rank": 1,
+   "tolerance_s": 15
+  },
+  {
+   "name": "background",
+   "rank": 2,
+   "tolerance_s": 5
+  }
+ ],
+ "models": [
+  {
+   "id": "big",
+   "name": "Big model",
+   "slots": 1
+  },
+  {
+   "id": "small",
+   "name": "Small model",
+   "slots": 4
+  }
+ ],
+ "jobs": [
+  {
+   "id": "writer-app",
+   "name": "The writing app",
+   "class": "interactive",
+   "order": [
+    "big",
+    "small"
+   ],
+   "ticked": true,
+   "tags": [
+    "writer-app/*"
+   ]
+  },
+  {
+   "id": "nightly",
+   "name": "Nightly jobs",
+   "class": "background",
+   "order": [
+    "small"
+   ],
+   "ticked": false,
+   "tags": [
+    "job.*"
+   ]
+  }
+ ],
+ "settings": {
+  "park_wait_s": 600,
+  "sticky_s": 7200
+ }
+}

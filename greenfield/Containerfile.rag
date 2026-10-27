@@ -1,0 +1,17 @@
+# The Lookup RAG box for greenfield/ragtest.sh: the dev image plus Lookup's [rag] extra (Qdrant client, fastembed,
+# Docling on CPU), a Qdrant server binary, and the embedding, reranker and Docling models fetched at build time (the
+# only network use). The tests run with no network at all.
+FROM nebula-greenfield-dev
+USER root
+RUN /opt/venv/bin/pip install -q --extra-index-url https://download.pytorch.org/whl/cpu "torch" "torchvision" \
+ && /opt/venv/bin/pip install -q --extra-index-url https://download.pytorch.org/whl/cpu "qdrant-client>=1.12" "fastembed>=0.5" "docling>=2.40" "reportlab"
+ARG QDRANT=v1.19.2
+RUN curl -fsSL "https://github.com/qdrant/qdrant/releases/download/${QDRANT}/qdrant-x86_64-unknown-linux-musl.tar.gz" \
+    | tar -xz -C /usr/local/bin qdrant && /usr/local/bin/qdrant --version
+ENV FASTEMBED_CACHE_PATH=/opt/models/fastembed HF_HOME=/opt/models/hf DOCLING_ARTIFACTS_PATH=/opt/models/docling
+RUN mkdir -p /opt/models && /opt/venv/bin/python -c "\
+from fastembed import TextEmbedding; from fastembed.rerank.cross_encoder import TextCrossEncoder; \
+list(TextEmbedding('BAAI/bge-small-en-v1.5').embed(['warm'])); list(TextCrossEncoder('Xenova/ms-marco-MiniLM-L-6-v2').rerank('a', ['b']))" \
+ && /opt/venv/bin/docling-tools models download -o /opt/models/docling layout tableformer rapidocr \
+ && chmod -R a+rX /opt/models
+USER stranger

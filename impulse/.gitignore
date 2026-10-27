@@ -1,0 +1,16 @@
+# build output
+build*/
+__pycache__/
+*.pyc
+# never in this repository: model files, and no prompt text, token ids, logits, routes or generated text (CONTRIBUTING.md)
+*.gguf
+*.safetensors
+*.tokens
+*.logits
+*.routes
+*.routes.gz
+*.graph.tsv.gz
+**/oracle.*
+**/*.oracle.*
+inputs/
+prompts/

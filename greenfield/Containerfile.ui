@@ -1,0 +1,6 @@
+# The page in a real browser, offline: the dev box plus Debian's Chromium and Playwright (installed at build time).
+FROM nebula-greenfield-dev
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends chromium fonts-dejavu-core && rm -rf /var/lib/apt/lists/* \
+    && /opt/venv/bin/pip install -q "playwright==1.47.0"
+USER stranger

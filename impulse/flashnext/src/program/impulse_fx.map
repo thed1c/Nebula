@@ -1,0 +1,8 @@
+/* libimpulse_fx (One Engine P1): the only exported symbols; the engine, its CPU pool, its MMQ kernels and its ggml
+   stay local to the library (flashnext/CMakeLists.txt, STRATA_FX_LIBRARY). */
+{
+  global:
+    impulse_fx_*;
+  local:
+    *;
+};

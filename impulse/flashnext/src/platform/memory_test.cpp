@@ -1,0 +1,161 @@
+// src/platform/memory_test.cpp - plan v0.3 P0.1: lock_resident on a 256 MiB region (CPU only, no GPU, no model).
+#include "strata/platform/memory.hpp"
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
+#endif
+
+namespace {
+uint64_t gib(double g) { return (uint64_t) (g * 1073741824.0); }
+
+// #577: the file tier's unbuffered choice (true = the file cache keeps its reads, so they stay buffered)
+int file_cache_keeps_cases() {
+    using strata::platform::file_cache_keeps;
+    struct Case { const char* what; double avail, arena, read; bool keeps; };
+    const double experts = 71.7;   // UD-Q4_K_XL's routed experts
+    const Case cases[] = {
+        // the reporter's 96 GB PC (83.0 GiB available at start): 0.1.38 passed the budget asked for and every
+        // shard's bytes (103.7 GiB) and went unbuffered
+        {"96 GB, 0.1.38's inputs (budget 72, all shards)", 83.0, 72.0, 103.7, false},
+        {"96 GB, budget 72, before the copy (arena = all experts)", 83.0, experts, 0.0, true},
+        {"96 GB, budget 72, copy built (48.94 resident)", 83.0 - 48.94, 0.0, experts - 48.94, true},
+        {"96 GB, budget 40, before the copy", 83.0, 40.0, experts - 40.0, true},
+        {"96 GB, budget 40, copy built", 83.0 - 40.0, 0.0, experts - 40.0, true},
+        // #357/#362's low-RAM PCs stay unbuffered
+        {"64 GB, budget 40, before the copy", 55.0, 40.0, experts - 40.0, false},
+        {"64 GB, budget 40, copy built", 15.0, 0.0, experts - 40.0, false},
+        {"32 GB, budget 16, before the copy", 26.0, 16.0, experts - 16.0, false},
+        {"32 GB, budget 16, copy built", 10.0, 0.0, experts - 16.0, false},
+        {"32 GB, Q2_0 pack (34 GiB experts), budget 8", 26.0, 8.0, 34.0 - 8.0, false},
+        {"nothing available", 0.0, 0.0, 1.0, false},
+        {"arena larger than the RAM", 10.0, 20.0, 0.0, true},
+    };
+    int fail = 0;
+    for (const Case& c : cases) {
+        const bool got = file_cache_keeps(gib(c.avail), gib(c.arena), gib(c.read));
+        std::printf("file_cache_keeps %-58s -> %s%s\n", c.what, got ? "buffered" : "unbuffered",
+                    got == c.keeps ? "" : "   <-- WRONG");
+        fail |= got != c.keeps;
+    }
+    // #1194, the Linux file tier: a skewed read set, so a twentieth of it (at least 1.5 GiB) is room enough
+    const Case linux_cases[] = {
+        {"#1194: 31 GB + 12 GB GPU, budget 18 built (6.4 avail, 13.6 read)", 6.4, 0.0, 13.6, true},
+        {"#1194: before the copy (avail 25, arena 18, read 13.6)", 25.0, 18.0, 13.6, true},
+        {"32 GB cgroup, budget 18, copy built (12.1 avail, 22 read)", 12.1, 0.0, 22.0, true},
+        {"32 GB cgroup, budget 24, copy built (3.8 avail, 16 read)", 3.8, 0.0, 16.0, true},
+        {"20 GB cgroup, budget 12, copy built (4.7 avail, 28 read)", 4.7, 0.0, 28.0, true},
+        {"12 GB cgroup, budget 6, copy built (3.5 avail, 34 read)", 3.5, 0.0, 34.0, true},
+        {"no room beside the margin (1 avail, 47 read)", 1.0, 0.0, 47.0, false},
+        {"room under the 1.5 GiB floor (2.4 avail, 47 read)", 2.4, 0.0, 47.0, false},
+        {"room a twentieth of the reads (3.4 avail, 47 read)", 3.4, 0.0, 47.0, true},
+        {"room just under that (3.3 avail, 47 read)", 3.3, 0.0, 47.0, false},
+        {"a big read set needs its twentieth (4 avail, 200 read)", 4.0, 0.0, 200.0, false},
+        {"a big read set with that room (12 avail, 200 read)", 12.0, 0.0, 200.0, true},
+        {"read less than the floor (2.5 avail, 1 read)", 2.5, 0.0, 1.0, true},
+        {"nothing available", 0.0, 0.0, 1.0, false},
+        {"arena larger than the RAM", 10.0, 20.0, 5.0, false},
+    };
+    for (const Case& c : linux_cases) {
+        const bool got = file_cache_keeps(gib(c.avail), gib(c.arena), gib(c.read), 1ull << 30, 0.05, 3ull << 29);
+        std::printf("file_cache_keeps (Linux file tier) %-52s -> %s%s\n", c.what, got ? "buffered" : "unbuffered",
+                    got == c.keeps ? "" : "   <-- WRONG");
+        fail |= got != c.keeps;
+    }
+    return fail;
+}
+
+// ram88: the auto low-RAM rule and the page-file check (setup.py: test_setup_nvfp4's RamRule and PageFile)
+int ram_rule_cases() {
+    using namespace strata::platform;
+    int fail = 0;
+    const struct { double gib; bool low; } ram[] = {
+        {127.18, false}, {95.6, false}, {93.4, false}, {92.0, false}, {91.9, true}, {63.7, true}, {31.9, true}, {0, false}};
+    for (const auto& c : ram) {
+        const bool got = low_ram_auto((uint64_t) (c.gib * 1073741824.0));
+        std::printf("low_ram_auto %7.2f GiB -> %s%s\n", c.gib, got ? "low-RAM" : "arena", got == c.low ? "" : "   <-- WRONG");
+        fail |= got != c.low;
+    }
+    // 0.1.42-nvfp4.2: by the pack's size too (experts.bin GiB + 16)
+    const struct { double gib, experts; bool low, by_size; } packs[] = {
+        {127.18, 119.53, true, true}, {127.18, 103.13, false, false}, {127.18, 63.28, false, false},
+        {95.6, 63.28, false, false}, {95.6, 103.13, true, true}, {91.9, 63.28, true, false}, {255.7, 119.53, false, false},
+        {0, 119.53, false, false}};
+    for (const auto& c : packs) {
+        const uint64_t in = (uint64_t) (c.gib * 1073741824.0), ex = (uint64_t) (c.experts * 1073741824.0);
+        const bool got = low_ram_auto(in, ex), by = low_ram_by_size(in, ex);
+        std::printf("low_ram_auto %7.2f GiB, experts %7.2f GiB -> %s%s%s\n", c.gib, c.experts, got ? "low-RAM" : "arena",
+                    by ? " (by size)" : "", got == c.low && by == c.by_size ? "" : "   <-- WRONG");
+        fail |= got != c.low || by != c.by_size;
+    }
+    const struct { const char* line; bool ok; char drive; int64_t initial, max; } lines[] = {
+        {"c:\\pagefile.sys 64000 64000", true, 'C', 64000, 64000},
+        {"D:\\pagefile.sys 16000 64000", true, 'D', 16000, 64000},
+        {"C:\\pagefile.sys 0 0", true, 'C', -1, -1},
+        {"C:\\pagefile.sys", true, 'C', -1, -1},
+        {"?:\\pagefile.sys", true, '?', -1, -1},
+        {"", false, 0, 0, 0},
+    };
+    for (const auto& c : lines) {
+        char d = 0;
+        int64_t i = 0, m = 0;
+        const bool ok = parse_paging_file(c.line, d, i, m);
+        const bool right = ok == c.ok && (!ok || (d == c.drive && i == c.initial && m == c.max));
+        std::printf("parse_paging_file \"%s\" -> %d %c %lld %lld%s\n", c.line, (int) ok, d ? d : '-', (long long) i,
+                    (long long) m, right ? "" : "   <-- WRONG");
+        fail |= !right;
+    }
+    // MB as the dialog counts them.  Only what is there for sure: the size now, or a larger initial size (#60)
+    const struct { const char* what; int64_t initial, max; uint64_t free, cur, want; bool grows; } pf[] = {
+        {"set 64000, on the disk", 64000, 64000, 900000, 64000, 64000, false},
+        {"set 16000", 16000, 16000, 900000, 16000, 16000, false},
+        {"16000-64000: its initial size", 16000, 64000, 900000, 16000, 16000, true},
+        {"16000-64000, grown to 30000 now", 16000, 64000, 900000, 30000, 30000, true},
+        {"system-managed, now 6000", -1, -1, 900000, 6000, 6000, true},
+        {"set 64000, the file still 16000", 64000, 64000, 900000, 16000, 64000, false},
+        {"set 64000, the file 16000, 20000 free", 64000, 64000, 20000, 16000, 36000, false},
+        {"none on the drive", -1, -1, 900000, 0, 0, true},
+    };
+    for (const auto& c : pf) {
+        const uint64_t got = page_file_guaranteed_mb(c.initial, c.free, c.cur);
+        const bool grows = page_file_grows(c.initial, c.max);
+        std::printf("page_file_guaranteed_mb %-40s -> %llu%s%s\n", c.what, (unsigned long long) got,
+                    grows ? " (grows on demand)" : "", got == c.want && grows == c.grows ? "" : "   <-- WRONG");
+        fail |= got != c.want || grows != c.grows;
+    }
+    const PageFiles here = page_files();
+    std::printf("page_files here: known=%d total %llu MB for sure, grows=%d (%s)%s\n", (int) here.known,
+                (unsigned long long) here.total_mb, (int) here.grows, here.detail.c_str(),
+                here.known && here.total_mb < kPageFileWarnMb ? " - the engine warns" : "");
+    return fail;
+}
+}  // namespace
+
+int main() {
+    int fail_keeps = file_cache_keeps_cases() | ram_rule_cases();
+    const uint64_t bytes = 256ull << 20;
+    void* p = std::malloc(bytes);
+    if (p == nullptr) return 2;
+    std::memset(p, 1, bytes);
+    const strata::platform::LockResult r = strata::platform::lock_resident(p, bytes);
+    std::printf("lock_resident: ok=%d locked=%llu MiB (%s)\n", (int) r.ok, (unsigned long long) (r.locked_bytes >> 20),
+                r.note.c_str());
+    int fail = !(r.ok && r.locked_bytes == bytes) | fail_keeps;
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS pmc{};
+    GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc);
+    std::printf("working set %llu MiB\n", (unsigned long long) (pmc.WorkingSetSize >> 20));
+    fail |= pmc.WorkingSetSize < bytes;
+#endif
+    strata::platform::unlock_resident(p, bytes);
+    std::free(p);
+    std::printf("platform_memory_test: %s\n", fail ? "FAILED" : "OK");
+    return fail;
+}

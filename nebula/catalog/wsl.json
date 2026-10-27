@@ -1,0 +1,25 @@
+{
+ "about": "The Safe sandbox on Windows (greenfield/windows/sandbox.ps1, nebula/wslbox.py): Nebula's own WSL2 distro and what goes in it, pinned. Ubuntu's root filesystem by sha256; Podman and NVIDIA's container toolkit by exact version, their files checked by apt against Ubuntu's and NVIDIA's signed indexes (NVIDIA's key by fingerprint).",
+ "distro": "NebulaEH",
+ "rootfs": {
+  "url": "https://cloud-images.ubuntu.com/wsl/releases/24.04/20240423/ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz",
+  "sha256": "8251e27ffff381a4af5f41dcb94d867de3e0d9774a9241908ab34555d99315ea",
+  "bytes": 356739129
+ },
+ "apt": {
+  "podman": "4.9.3+ds1-1ubuntu0.2",
+  "passt": "0.0~git20240220.1e6f92b-1",
+  "uidmap": "1:4.13+dfsg1-4ubuntu3.2"
+ },
+ "nvidia": {
+  "repo": "https://nvidia.github.io/libnvidia-container/stable/deb/amd64",
+  "key_url": "https://nvidia.github.io/libnvidia-container/gpgkey",
+  "key_fingerprint": "C95B321B61E88C1809C4F759DDCAE044F796ECB0",
+  "toolkit": "1.20.1-1"
+ },
+ "base_image": "docker.io/library/ubuntu:24.04",
+ "impulse": {
+  "url": "https://github.com/thed1c/Nebula/releases/download/v{version}/impulse-{version}-linux-x86_64.tar.gz",
+  "image": "nebula-engine-impulse:{version}"
+ }
+}

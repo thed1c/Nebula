@@ -1,0 +1,35 @@
+{
+ "_note": "Halo's model: Liquid AI's own QAD Q4_0 file of LFM2.5-1.2B-Instruct, fetched at first run (pinned revision, sha256 checked), plus Nebula's two LoRA adapters shipped in nebula/assets/halo/ (F16). Standard = base + the Halo adapter; Uncensored = the same + the Heretic adapter at scale 1. Placement (the owner's 2026-10-21 order): a spare GPU, else spare VRAM on an engine's card (only what stays free after the engines sized their caches), else the CPU (always warm, capped threads, nice, its own router lane).",
+ "id": "halo-lfm25-1.2b",
+ "name": "Halo (LFM2.5 1.2B)",
+ "maker": "Liquid AI (adapters by Nebula)",
+ "license": "LFM Open License v1.0 (nebula/assets/halo/LICENSE-LFM-1.0)",
+ "base": {
+  "repo": "LiquidAI/LFM2.5-1.2B-Instruct-GGUF",
+  "revision": "8ed288026e23958ad9dfa92d53ed773a8eee7125",
+  "file": "LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf",
+  "sha256": "bb741ebb106d543e9de114b843a3d3d73d51c74b5801e69da2abde821a0cb3e1",
+  "bytes": 695755488
+ },
+ "adapters": {
+  "halo": {
+   "file": "halo-guard-v2-lora-f16.gguf",
+   "sha256": "874aaad4bbacd81bd4d8ecd6c4da5391369467ad8513bab18ed29836c82c56e6",
+   "bytes": 22230336,
+   "scale": 1.0
+  },
+  "uncensored": {
+   "file": "halo-uncensored-heretic-t198-lora-f16.gguf",
+   "sha256": "9ed0455c7de199b34ab2264dc9ef7a85bde3f35debcd757fcd6bde66a44916db",
+   "bytes": 1381792,
+   "scale": {"standard": 0.0, "uncensored": 1.0}
+  }
+ },
+ "server": {
+  "context": 32768,
+  "slots": 4,
+  "router_lane": {"slots": 1, "context": 4096},
+  "gpu_mb": 1400,
+  "cpu_threads": 4
+ }
+}
