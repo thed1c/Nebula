@@ -39,6 +39,15 @@ On the System page, **Updates** has the choice and **Look now**.
   reply is in flight, and runs the installer quietly as you (Linux: the `.run` with `--quiet`; Windows: `Setup.exe /S`,
   per user, no administrator). Nebula closes and opens again. A Nebula run from a checkout or a pip install is only
   told.
+- **Small updates** (the owner's word, 2026-10-27: "small updates", "keep the downloads as small as possible"). When
+  Impulse and everything else beside Nebula stayed the same, the feed's file for a platform also carries `app`:
+  Nebula's own code alone (its wheel and the package versions it was tested with, tens of MB instead of hundreds),
+  with the installers it fits on (`bases`). The installers record what they put in place (`app/install.json`: their
+  version, the extras); an install whose installer is one of the bases gets the small update, any other the whole
+  installer. The page says which, and its size. The small update is checked the same way (sha256, after the signed
+  feed), waits for the replies in flight, then Nebula steps out, the installer's own Python puts the new code in
+  (`pip`, which keeps every package already at its version), and Nebula opens again. Python, Impulse and the network's node programs are
+  not touched; a release that changes them ships no `app`.
 - **What Nebula needs beside itself** follows its pins too: running `python -m nebula.prereqs` again replaces the
   Qdrant Nebula installed when its pinned version moved, and fetches Halo's model again when its file is not the
   pinned sha256 (a Qdrant or a model file of your own is left as it is).
@@ -55,7 +64,13 @@ On the System page, **Updates** has the choice and **Look now**.
          --out ../nebula-updates
 
    It reads each file's sha256 from the file itself, refuses a key that is not the one Nebula trusts, and writes
-   `latest.json` and `latest.json.sig`.
+   `latest.json` and `latest.json.sig`. When Impulse, Python and the network's node programs did not change since the last full installer,
+   add the small update `package.py` wrote beside each installer, with the installers' versions it fits on:
+
+       --app linux-x86_64=dist/nebula-eh-0.1.4.1-app-linux-x86_64.tar.gz=https://github.com/thed1c/Nebula/releases/download/v0.1.4.1/nebula-eh-0.1.4.1-app-linux-x86_64.tar.gz=0.1.4 \
+       --app windows-x86_64=dist/nebula-eh-0.1.4.1-app-windows-x86_64.tar.gz=https://github.com/thed1c/Nebula/releases/download/v0.1.4.1/nebula-eh-0.1.4.1-app-windows-x86_64.tar.gz=0.1.4
+
+   (attach those files to the release too).
 3. Commit both to the public `thed1c/nebula-updates` repository. Each Nebula sees it at its next start ("launch") or its next **Look now**.
 
 A new key (only if the old one is lost: every Nebula already out trusts the old one) is

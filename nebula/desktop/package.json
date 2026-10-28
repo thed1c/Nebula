@@ -1,6 +1,6 @@
 {
   "name": "nebula-desktop",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Nebula's desktop window: Electron around the cockpit's page, the cockpit's Python server started beside it.",
   "main": "main.js",

@@ -1,6 +1,6 @@
 """nebula/halo_engine.py: Halo's own model, running for Halo alone (docs/halo.md, nebula/halo_model.py).
 
-When the base file and a runtime are on this machine, Nebula starts Halo's server at startup, in an Impulse Engine (design decision 10-21), else llama-server: the owner's placement (below; on the CPU threads capped and `nice`), the
+When the base file and a runtime are on this machine, Nebula starts Halo's server at startup, in an Impulse Engine (design decision 10-21; Impulse portable without an NVIDIA card): the owner's placement (below; on the CPU threads capped and `nice`), the
 Standard or Uncensored adapter scale, its log beside the config (halo-engine.log). It is not one of the models: it is
 not on the map, not routed to, not shared over Gravity. Halo's own calls carry a view of the config that holds it
 alone (nebula/halo.py), so they go through the same chat path (its tools, the ledger) as any other.
@@ -11,8 +11,11 @@ alone (nebula/halo.py), so they go through the same chat path (its tools, the le
         engine's card; the CPU only when no card has room (said on Halo's panel); "cpu": the CPU, by the owner's choice
 
 Where things are found (first wins):
-  the runtime   NEBULA_HALO_SERVER (a command line); else Impulse (packages.locate: the installer's impulse/, Nebula's
-                own, PATH; not on Windows yet), then llama-server (the installer's halo/ folder, PATH) when Impulse fails
+  the runtime   NEBULA_HALO_SERVER (a command line); else, with an NVIDIA card, Impulse (packages.locate: the
+                installer's impulse/, Nebula's own, PATH; Linux and Windows); else, or when Impulse fails, Impulse
+                portable (impulse/portable: CPU + Vulkan, for a Radeon or Intel card or the CPU), which is not in the
+                installers: Nebula downloads it (nebula/pieces.py, sha256 checked) on a machine
+                without an NVIDIA card, and says so; last, a llama-server of the owner's own on the PATH
   the base      NEBULA_HALO_BASE, the installer's halo/ folder, the models folder (hf.Pulls' layout, as fetched)
 
 The base model is not inside the installer: the installer fetches it while it unpacks the rest (design decision 10-21: "We will
@@ -22,6 +25,7 @@ retrying while the network is away.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -53,8 +57,8 @@ def find_llama_server() -> list[str] | None:
     return [w] if w else None
 
 
-# Halo on a Radeon (design decision 10-22: "Halo should also work on the Radeon"): llama-server's Vulkan backend reaches AMD and
-# Intel cards; Impulse is CUDA only. A discrete non-NVIDIA card with room is the first spare GPU (Impulse's models cannot
+# Halo on a Radeon (design decision 10-22: "Halo should also work on the Radeon"): Impulse portable's Vulkan backend (llama.cpp's) reaches AMD and
+# Intel cards; Impulse's own build is CUDA only. A discrete non-NVIDIA card with room is the first spare GPU (Impulse's models cannot
 # use it, so the NVIDIA card stays theirs); integrated graphics share the system's memory and are left out.
 VK_LINE = re.compile(r"^\s*(Vulkan\d+):\s*(.+?)\s*\((\d+) MiB,\s*(\d+) MiB free\)")
 INTEGRATED = re.compile(r"UHD|Iris|^AMD Radeon\(TM\) Graphics$|^AMD Radeon Graphics$|llvmpipe|Microsoft Basic", re.I)
@@ -62,7 +66,7 @@ _VK_CACHE: dict = {}
 
 
 def vulkan_gpus(cmd: list[str] | None) -> list[dict]:
-    """The non-NVIDIA discrete cards llama-server's Vulkan backend sees: [{"device": "Vulkan0", "name", "free_mb"}]."""
+    """The non-NVIDIA discrete cards a Vulkan runtime (Impulse portable, llama-server) sees: [{"device": "Vulkan0", "name", "free_mb"}]."""
     if not cmd:
         return []
     key = tuple(cmd)
@@ -82,7 +86,7 @@ def vulkan_gpus(cmd: list[str] | None) -> list[dict]:
 
 
 def lora_paths_without_colons(args: list[str], cwd: str | None, nt: bool = os.name == "nt") -> list[str]:
-    """llama-server reads --lora-scaled as FILE:SCALE,...: a Windows path's drive colon (C:\\...) breaks it, so on Windows
+    """llama.cpp's server (Impulse's too) reads --lora-scaled as FILE:SCALE,...: a Windows path's drive colon (C:\\...) breaks it, so on Windows
     each adapter is given relative to the folder the server runs in (same drive: no colon)."""
     if not nt or not cwd or "--lora-scaled" not in args:
         return args
@@ -101,19 +105,39 @@ def lora_paths_without_colons(args: list[str], cwd: str | None, nt: bool = os.na
     return out
 
 
+def find_portable(base_dir: str | None = None) -> str | None:
+    """Impulse portable's program: NEBULA_IMPULSE_PORTABLE_BIN, or the one Nebula downloaded (nebula/pieces.py)."""
+    from nebula import pieces
+    env = os.environ.get("NEBULA_IMPULSE_PORTABLE_BIN")
+    if env and os.path.isfile(env):
+        return env
+    return pieces.find("impulse-portable", base_dir)
+
+
+def has_nvidia() -> bool:
+    from nebula import engines
+    try:
+        return bool(engines.cards())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def find_servers(base_dir: str | None = None) -> list[tuple[str, list[str]]]:
-    """Halo's runtimes in the order tried (design decision 10-21: Halo in an Impulse Engine): Impulse, then llama-server,
-    the fallback (an Impulse too old for dense LFM2; Windows until Impulse's 64-bit adapter offsets)."""
+    """Halo's runtimes in the order tried (design decision 10-21: Halo in an Impulse Engine): Impulse with an NVIDIA card
+    (its CUDA build cannot start without one), then Impulse portable (CPU + Vulkan), then a llama-server of the owner's."""
     env = os.environ.get("NEBULA_HALO_SERVER")
     if env:
         from nebula import cmdline
         return [("halo-server", cmdline.split(env))]
     out = []
-    if os.name != "nt":
+    if has_nvidia():
         from nebula import packages
         imp = packages.locate("impulse", base_dir)
         if imp:
             out.append(("Impulse", [imp]))
+    port = find_portable(base_dir)
+    if port:
+        out.append(("Impulse portable", [port]))
     ls = find_llama_server()
     if ls:
         out.append(("llama.cpp", ls))
@@ -160,7 +184,7 @@ class HaloEngine:
         self.proc = None
         self.tier = None                 # the Tier Halo's calls use, once its server answers
         self.where: str | None = None
-        self.runtime: str | None = None   # Impulse or llama.cpp, once one answers
+        self.runtime: str | None = None   # Impulse, Impulse portable or llama.cpp, once one answers
         self.card = ""                    # the card's UUID: an index can name another card than nvidia-smi's on mixed rigs
         self.vk_device: str | None = None   # Halo on a Radeon (or other non-NVIDIA card): its Vulkan device, e.g. Vulkan0
         self.gpu_name: str | None = None
@@ -186,7 +210,7 @@ class HaloEngine:
         self.vk_device = self.gpu_name = None
         if self.settings()["where"] == "cpu":
             return "cpu"                                  # the owner's choice
-        # a spare Radeon (or other non-NVIDIA card) first: Halo there through llama-server's Vulkan backend
+        # a spare Radeon (or other non-NVIDIA card) first: Halo there through Impulse portable's Vulkan backend
         need = int(halo_model.manifest()["server"]["gpu_mb"]) + 512
         ls = next((cmd for rt, cmd in find_servers(self.cfg.base_dir) if rt != "Impulse"), None)
         vk = [d for d in vulkan_gpus(ls) if d["free_mb"] >= need]
@@ -234,9 +258,16 @@ class HaloEngine:
             return self
         bad = halo_model.verify_assets()
         server, base = find_servers(self.cfg.base_dir), find_base(self.models_dir())
+        if not bad and not has_nvidia() and not any(rt != "Impulse" for rt, _ in server):
+            from nebula import pieces                     # no NVIDIA card: Impulse portable, downloaded now, said plainly
+            if pieces.pin("impulse-portable") is not None:
+                self.state = "downloading"
+                self.why = "fetching its runtime: " + pieces.say("impulse-portable")
+                threading.Thread(target=self._fetch_runtime_then_start, name="halo-runtime", daemon=True).start()
+                return self
         if bad or not server:
             self.state = "unavailable"
-            self.why = ("its adapters: " + "; ".join(bad)) if bad else "no Impulse or llama-server on this machine"
+            self.why = ("its adapters: " + "; ".join(bad)) if bad else "no runtime for it on this machine (Impulse, or Impulse portable without an NVIDIA card)"
             return self
         if not base:
             if os.environ.get("NEBULA_HALO_BASE"):
@@ -250,6 +281,24 @@ class HaloEngine:
         return self
 
     RETRY_S = 120.0
+
+    def _fetch_runtime_then_start(self) -> None:
+        """Impulse portable (pinned, sha256), then Halo's start as usual; while offline, tried again later."""
+        while self.state == "downloading":
+            try:
+                from nebula import pieces
+                pieces.fetch("impulse-portable", self.cfg.base_dir,
+                             lambda got, total: setattr(self, "progress", {"bytes": got, "total": total}))
+                self.progress = None
+                LOG.info("Halo's runtime: Impulse portable is in place")
+                self.state = "starting"
+                self._start()
+                return
+            except Exception as e:  # noqa: BLE001 - offline, or the release away: try again later
+                self.why = f"its runtime could not be fetched yet ({str(e)[:160]}); trying again in {int(self.RETRY_S)} s"
+                LOG.info("Halo's runtime: %s", self.why)
+                self._wake.wait(self.RETRY_S)
+                self._wake.clear()
 
     def _fetch_then_run(self, server: list[tuple[str, list[str]]], variant: str) -> None:
         """The base model, fetched (pinned revision, sha256), then Halo's server; while offline, tried again later."""
@@ -280,7 +329,7 @@ class HaloEngine:
                 self._wake.clear()
 
     def _run(self, servers: list[tuple[str, list[str]]], base: str, variant: str) -> None:
-        """Halo's server on the first runtime that comes up: Impulse, else llama-server."""
+        """Halo's server on the first runtime that comes up: Impulse, else Impulse portable, else llama-server."""
         why = None
         for runtime, server in servers:
             why = self._run_one(runtime, server, base, variant)
@@ -296,7 +345,7 @@ class HaloEngine:
         try:
             self.where = self.place()
             if self.where.startswith("vk:") and runtime == "Impulse":
-                return "Impulse runs on NVIDIA cards only: the Radeon is llama-server's (Vulkan)"
+                return "Impulse's CUDA build runs on NVIDIA cards only: the Radeon is Impulse portable's (Vulkan)"
             port = _free_port()
             args = halo_model.server_args(self.models_dir(), variant, "gpu" if self.where.startswith("vk:") else self.where,
                                           "worker", port, base=base)
@@ -306,7 +355,7 @@ class HaloEngine:
             # Halo's server answers only Nebula: a key of its own each start, in its environment (never on the command
             # line, which goes to the log), so a web page open in the browser cannot use it (llama-server allows any origin)
             import secrets
-            self.api_key = secrets.token_urlsafe(24)      # llama-server and impulse-server both read LLAMA_API_KEY
+            self.api_key = secrets.token_urlsafe(24)      # impulse-server (both builds) and llama-server read LLAMA_API_KEY
             env["LLAMA_API_KEY"] = self.api_key
             args = lora_paths_without_colons(args, os.path.dirname(server[0]) or None)
             cmd = server + args

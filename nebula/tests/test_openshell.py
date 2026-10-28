@@ -120,6 +120,37 @@ class OpenShellTest(unittest.TestCase):
         call(self.base, "/api/yard/engines/boxed/start", {"wait": True})
         self.assertEqual(len(json.load(open(self.env["FAKE_DOCKER_IMAGES"]))), builds)
 
+    def test_a_flashnext_pack_runs_in_a_sandbox_with_impulse_fx_beside_impulse_server(self):
+        """0.1.4: Impulse Flash-Next is a piece of its own (nebula/pieces.py). A pack on Impulse in a sandbox gets an image
+        with impulse-fx and its engine library beside impulse-server; without the piece it is refused, saying what to get."""
+        prog = os.path.join(self.tmp, "bin", "impulse-server")
+        os.makedirs(os.path.dirname(prog))
+        Path(prog).write_text(f"#!/bin/sh\nexec {sys.executable} -m nebula.tests.fake_impulse \"$@\"\n")
+        os.chmod(prog, 0o755)
+        pack = os.path.join(self.models, "fn-pack")
+        os.makedirs(os.path.join(pack, "pack"))
+        Path(pack, "pack", "index.txt").write_text("")
+        make_gguf(os.path.join(pack, "fn-dense.gguf"))
+        spec = dict(self.srv.yard.spec("boxed"), kind="impulse", binary=prog, model="models/fn-pack", card="GPU-aaaa")
+        self.assertEqual(call(self.base, "/api/yard/engines", spec)[0], 200)
+        st, out = call(self.base, "/api/yard/engines/boxed/start", {"wait": True})
+        self.assertNotEqual(out.get("state"), "ready")
+        self.assertIn("Impulse Flash-Next, which is not here yet", json.dumps(out))
+        fx = os.path.join(self.tmp, "nebula-impulse-flashnext")                           # the piece, as the setup leaves it
+        os.makedirs(fx)
+        for f in ("impulse-fx", "libimpulse_fx.so", "libstrata_kq.so"):
+            Path(fx, f).write_text(f)
+        st, out = call(self.base, "/api/yard/engines/boxed/start", {"wait": True})
+        self.assertEqual((st, out["state"]), (200, "ready"), out)
+        extras = sorted(os.path.join(fx, f) for f in os.listdir(fx))
+        tag = O.engine_image_tag(prog, extras)
+        self.assertNotEqual(tag, O.engine_image_tag(prog))                                 # its own image
+        box = json.load(open(os.path.join(self.env["FAKE_OPENSHELL_HOME"], O.sandbox_name("boxed"), ".spec")))
+        self.assertEqual(box["from"], tag)
+        built = json.load(open(self.env["FAKE_DOCKER_IMAGES"]))[tag]
+        self.assertEqual(sorted(os.listdir(os.path.join(built, "engine"))),
+                         ["impulse-fx", "impulse-server", "lib", "libimpulse_fx.so", "libstrata_kq.so"])
+
     def test_sandbox_names_fit_openshells_limit(self):
         self.assertEqual(O.sandbox_name("boxed"), "nebeng-boxed")
         long1, long2 = O.sandbox_name("storyteller-big-31b"), O.sandbox_name("storyteller-big-26b")
@@ -171,6 +202,16 @@ class NumaLayoutTest(unittest.TestCase):
     engine held to one socket, a one-socket machine, the engine's own setting, and "numa": "off"."""
     TWO_SOCKETS = ("/sys/devices/system/node/node0/cpulist 0-17,36-53\n"
             "/sys/devices/system/node/node1/cpulist 18-35,54-71\n")
+
+    def test_list_answers_in_any_wrapping_become_rows(self):
+        rows = [{"name": "a", "phase": "Ready"}]
+        self.assertEqual(O._rows(rows, "sandboxes"), rows)
+        self.assertEqual(O._rows({"sandboxes": rows}, "sandboxes"), rows)
+        self.assertEqual(O._rows({"items": rows, "count": 1}, "sandboxes"), rows)
+        self.assertEqual(O._rows({"a": {"phase": "Ready"}}, "sandboxes"), rows)
+        self.assertEqual(O._rows({"name": "a", "phase": "Ready"}, "sandboxes"), rows)
+        self.assertEqual(O._rows({}, "sandboxes"), [])
+        self.assertEqual(O._rows("nope", "sandboxes"), [])
 
     def test_cpulists(self):
         self.assertEqual(O.parse_cpulist("0-3,8"), [0, 1, 2, 3, 8])

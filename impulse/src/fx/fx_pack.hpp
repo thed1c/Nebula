@@ -72,7 +72,7 @@ inline std::string gguf_architecture(const std::string & path) {
 }
 
 inline bool q35_architecture(const std::string & arch) {
-    return arch == "qwen35moe" || arch == "qwen35" || arch == "lfm2moe" || arch == "lfm2" || arch == "qwen4exp";
+    return arch == "qwen35moe" || arch == "qwen35" || arch == "lfm2moe" || arch == "lfm2" || arch == "qwen4exp" || arch == "flint";
 }
 
 // "fx", "q35" or "g4" for a -m path (g4 also for a path that is neither: its own loader reports it)

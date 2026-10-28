@@ -2,7 +2,7 @@
 
     GET  /api/yard/engines                    the managed engines (state, fit, command, version) and this machine's cards
     GET  /api/yard/engines/<name>             one engine, with its deployment history
-    POST /api/yard/engines                    add or change an engine (a new deployment version)
+    POST /api/yard/engines                    add or change an engine (saved as its next deployment version; Undo goes back)
     POST /api/yard/engines/<name>/<action>    start | stop | drain | restart | verify | undo | remove
     POST /api/yard/engines/<name>/route       make it a model (a tier on its address), unless one is already there
     GET  /api/yard/packages                   the engine packages, each one's settings (the Edit form) and binary/version

@@ -5,6 +5,22 @@ Impulse was called Strata-Lite until 2026-10-17. Its versions restart with the f
 The sections from 0.2.3 down are Strata-Lite's own numbers.
 
 ## Unreleased
+- **Streaming as the tokens come (both servers, every model).** `stream: true` used to wait for the whole answer and send
+  every SSE event at once; a model that thinks first (Flint) showed nothing for minutes. Now each request's tokens go out as
+  llama-server's own partial results (`src/lite/stream_out.hpp`): one chat-parser state per request, so `reasoning_content`,
+  `content` and tool-call deltas come out as llama-server streams them; a tail that may still be a stop word, or half a UTF-8
+  character, waits; the final event carries finish_reason and usage. A client that leaves stops its slot at the next token
+  (freed within half a second); parallel slots stream side by side. The non-stream path is unchanged (the same answers byte
+  for byte), and so is the engine (the same logits). `stream-out-test` (`-DIMPULSE_TOOLS=ON`).
+- **Flint 40B-A2.5B (`flint`):** Recursive's Flint on the qwen35 engine (`H.flint`): every block attention, 35
+  sliding-window (513) with NeoX RoPE and 14 full with none, learned sinks, Q/K RMSNorm, 2 dense blocks, 256 experts top-6 by
+  sigmoid with renormalized weights, an ungated shared expert, NVFP4 second-level scales, llama.cpp's per-expert-token
+  down-projection rescale. llama.cpp's Flint support (#30928, #30861's rescale, #30929's template escapes) adapted to b6b003d
+  in `patches/llama.cpp-b6b003d-flint.patch`, applied by the build to a private copy of the tree. The sliding layers read
+  only their window (`IMPULSE_SWA_FULL=1`: every cell, the bit-for-bit gates). Bit for bit with llama.cpp on two cards; one
+  16 GB card with the expert cache. Fixes found on the way, for any model without recurrent layers or with leading dense
+  layers: no shared expert on a dense block, no recurrent-state input when none is read, prompt-cache resume at any
+  position. `docs/FLINT.md`.
 - **Lazy verify logits (from Strata-Lite v0.2.4-exact1, dfb7bd6e), for One Engine P4 on the test server:** `IMPULSE_LAZY_LOGITS=1` (or the
   Strata-Lite name `STRATA_LITE_LAZY_LOGITS=1`, which Dense's definition sets) keeps a server step's logits on the cards and
   copies only the rows the accept loop reads into pinned memory (the same floats, the same tokens). Off unless set. Built with

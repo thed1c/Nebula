@@ -16,6 +16,7 @@ address is `https://huggingface.co`, or `HF_ENDPOINT` as huggingface_hub reads i
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -30,6 +31,8 @@ from pathlib import Path
 QUANT = re.compile(r"(?i)(?:^|[-_.])((?:I?Q\d(?:_[A-Z0-9]+)*)|BF16|F16|F32|MXFP4(?:_MOE)?)(?=[-_.]|$)")
 SHARD = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 
+
+RETRIES = 6                                       # a broken-off download resumes this many times (Range), pausing 2 s .. 60 s
 
 class HfError(ValueError):
     def __init__(self, status: int, message: str):
@@ -105,7 +108,8 @@ def resolve(url: str, token: str | None = None) -> dict:
         if e.get("type") != "file" or not p.lower().endswith(".gguf"):
             continue
         lfs = e.get("lfs") or {}
-        kind = "mmproj" if os.path.basename(p).lower().startswith("mmproj") else "model"
+        base = os.path.basename(p).lower()
+        kind = "mmproj" if base.startswith("mmproj") else "mtp" if base.startswith("mtp-") else "model"   # a drafter is not a model
         files.append({"path": p, "size": int(lfs.get("size") or e.get("size") or 0), "sha256": lfs.get("oid"),
                       "quant": quant_of(p), "kind": kind})
     if not files:
@@ -227,16 +231,9 @@ class Pulls:
                 return
         p["state"] = "cancelled" if p["cancel"] else "done"
 
-    def _one(self, p: dict, f: dict, token: str | None) -> None:
-        target = f["target"]
-        if os.path.exists(target) and (not f["total"] or os.path.getsize(target) == f["total"]):
-            f["bytes"], f["state"] = os.path.getsize(target), "done (already here)"
-            return
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        part = target + ".part"
+    def _fetch(self, p: dict, f: dict, url: str, part: str, token: str | None) -> bool:
+        """Read the file into `part` from the bytes it already has; True when a pause stopped it."""
         have = os.path.getsize(part) if os.path.exists(part) else 0
-        rev = urllib.parse.quote(p["revision"], safe="")
-        url = f"{endpoint()}/{p['repo']}/resolve/{rev}/{urllib.parse.quote(f['path'])}"
         h = _headers(token)
         if have:
             h["Range"] = f"bytes={have}-"
@@ -246,28 +243,55 @@ class Pulls:
             r = urllib.request.urlopen(req, timeout=60)
         except urllib.error.HTTPError as e:
             if e.code == 416 and have:                       # already whole
-                r = None
-            elif e.code in (401, 403):
+                return False
+            if e.code in (401, 403):
                 raise HfError(e.code, "gated or private: a Hugging Face token is needed") from None
-            else:
-                raise HfError(502, f"the Hub answered {e.code} for {f['path']}") from None
-        if r is not None:
-            with r:
-                if have and r.status != 206:                 # the server ignored the range: start over
-                    have = 0
-                total = int(r.headers.get("Content-Length") or 0) + have
-                f["total"] = f["total"] or total
-                with open(part, "ab" if have else "wb") as out:
-                    f["bytes"] = have
-                    while True:
-                        if p["cancel"]:
-                            f["state"] = "paused"
-                            return
-                        chunk = r.read(1 << 18)          # small enough that a pause lands within a moment
-                        if not chunk:
-                            break
-                        out.write(chunk)
-                        f["bytes"] += len(chunk)
+            if e.code >= 500 or e.code == 429:                   # the Hub busy for a moment: retried
+                raise ConnectionError(f"the Hub answered {e.code}") from None
+            raise HfError(502, f"the Hub answered {e.code} for {f['path']}") from None
+        with r:
+            if have and r.status != 206:                     # the server ignored the range: start over
+                have = 0
+            total = int(r.headers.get("Content-Length") or 0) + have
+            f["total"] = f["total"] or total
+            with open(part, "ab" if have else "wb") as out:
+                f["bytes"] = have
+                while True:
+                    if p["cancel"]:
+                        f["state"] = "paused"
+                        return True
+                    chunk = r.read(1 << 18)                  # small enough that a pause lands within a moment
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    f["bytes"] += len(chunk)
+        if f["total"] and os.path.getsize(part) < f["total"]:   # the stream ended early without an error
+            raise ConnectionError(f"the stream ended at {os.path.getsize(part)} of {f['total']} bytes")
+        return False
+
+    def _one(self, p: dict, f: dict, token: str | None) -> None:
+        target = f["target"]
+        if os.path.exists(target) and (not f["total"] or os.path.getsize(target) == f["total"]):
+            f["bytes"], f["state"] = os.path.getsize(target), "done (already here)"
+            return
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        part = target + ".part"
+        rev = urllib.parse.quote(p["revision"], safe="")
+        url = f"{endpoint()}/{p['repo']}/resolve/{rev}/{urllib.parse.quote(f['path'])}"
+        # a dropped connection or a stalled read mid-file (a 30 GB file is read for many minutes) picks up from the bytes
+        # already on disk (Range), up to RETRIES times with a growing pause; the Hub's own refusals are not retried
+        for attempt in range(RETRIES + 1):
+            try:
+                if self._fetch(p, f, url, part, token):
+                    return                                   # paused
+                break
+            except HfError:
+                raise
+            except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+                if attempt == RETRIES or p["cancel"]:
+                    raise HfError(502, f"{f['path']}: the download kept breaking off ({e}); pull again to resume") from None
+                f["state"] = f"retrying ({attempt + 1}/{RETRIES}): {str(e)[:80]}"
+                time.sleep(min(60, 2 ** (attempt + 1)))
         if f["sha256"]:
             f["state"] = "checking"
             h = hashlib.sha256()
@@ -279,3 +303,64 @@ class Pulls:
                 raise HfError(502, f"{f['path']}: the checksum does not match (the download was removed; pull again)")
         os.replace(part, target)
         f["state"] = "done"
+
+
+# --- what a repository's GGUF is, before anything is downloaded
+_GGUF_SCALAR = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}   # type -> bytes (8 string, 9 array)
+
+
+def gguf_architecture(head: bytes) -> str | None:
+    """general.architecture from the first bytes of a GGUF file (its header and metadata), or None when it is not in them."""
+    import struct
+    if head[:4] != b"GGUF":
+        return None
+    pos = 4 + 4 + 8 + 8                                  # magic, version, tensor count, key count
+
+    def take(n):
+        nonlocal pos
+        if pos + n > len(head):
+            raise EOFError
+        b = head[pos:pos + n]
+        pos += n
+        return b
+
+    def string():
+        return take(struct.unpack("<Q", take(8))[0])
+
+    def skip(t):
+        if t == 8:
+            string()
+        elif t == 9:
+            et, n = struct.unpack("<I", take(4))[0], struct.unpack("<Q", take(8))[0]
+            for _ in range(n):
+                skip(et)
+        else:
+            take(_GGUF_SCALAR[t])
+    try:
+        n_kv = struct.unpack("<Q", head[16:24])[0]
+        for _ in range(n_kv):
+            key = string().decode("utf-8", "replace")
+            t = struct.unpack("<I", take(4))[0]
+            if key == "general.architecture" and t == 8:
+                return string().decode("utf-8", "replace")
+            skip(t)
+    except (EOFError, KeyError, struct.error):
+        return None
+    return None
+
+
+def remote_architecture(repo: str, revision: str, path: str, token: str | None = None, limit: int = 4 << 20) -> str | None:
+    """A Hub GGUF's general.architecture, read from its first bytes (a range request: nothing else is downloaded)."""
+    url = f"{endpoint()}/{repo}/resolve/{urllib.parse.quote(revision, safe='')}/{urllib.parse.quote(path)}"
+    req = urllib.request.Request(url, headers={**_headers(token), "Range": f"bytes=0-{limit - 1}"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            head = r.read(limit)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise HfError(e.code, "this repository is gated or private: add a Hugging Face token (it is kept in Nebula's "
+                                  "key file only) and accept the model's terms on its page") from None
+        raise HfError(502, f"the Hub answered {e.code}") from None
+    except OSError as e:
+        raise HfError(502, f"the Hub cannot be reached: {e}") from None
+    return gguf_architecture(head)

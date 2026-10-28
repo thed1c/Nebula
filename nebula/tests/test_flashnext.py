@@ -179,5 +179,38 @@ class TestFlashNext(unittest.TestCase):
         self.assertEqual(F.long_context_cost(262144)["cards_mib"], [0, 0])
 
 
+    def test_pack_on_impulse_gets_fx_words(self):
+        # impulse-server's fx mode refuses llama's -c/-np/--no-webui (a real run, 2026-10-27: exit code 2)
+        from nebula import engines
+        spec = {"name": "fn", "kind": "impulse", "model": self.pack, "host": "127.0.0.1", "port": 18300,
+                "context": 32768, "slots": 2, "binary": "impulse-server"}
+        argv = engines.command_of(dict(spec, card="GPU-a,GPU-b"))
+        self.assertEqual(argv[:7], ["impulse-server", "-m", self.pack, "--host", "127.0.0.1", "--port", "18300"])
+        self.assertNotIn("-np", argv)
+        self.assertEqual(argv[7], "--fx-config-json")
+        cfg = json.loads(argv[8])
+        # impulse-server alone passes only --pack and --native: the engine wants the PLE and embedding files too
+        files = F.pack_files(self.pack)
+        for flag, path in (("--ple-gguf", files.get("ple")), ("--embd-gguf", files.get("embd"))):
+            if path:
+                self.assertEqual(cfg["args"][cfg["args"].index(flag) + 1], path)
+        self.assertNotIn("--expert-profile", cfg["args"])           # the reference image's own file, not here
+        # the piece's profile when it carries one (a layer split across cards needs it)
+        argv = engines.command_of(dict(spec, card="GPU-a,GPU-b", fx_files=dict(files, profile="/opt/p.bin")))
+        cfg = json.loads(argv[argv.index("--fx-config-json") + 1])
+        self.assertEqual(cfg["args"][cfg["args"].index("--expert-profile") + 1], "/opt/p.bin")
+        # the cards stay Nebula's (CUDA_VISIBLE_DEVICES by UUID): no "gpu" for impulse-server to set over them
+        self.assertNotIn("gpu", cfg)
+        self.assertEqual(cfg["args"][cfg["args"].index("--prefill") + 1], "auto")      # serving needs --prefill and --spec
+        self.assertIn("--spec", cfg["args"])
+        self.assertEqual((cfg["args"][cfg["args"].index("--layer-split") + 1], cfg["parallel"]), ("16", 2))
+        # in a sandbox the pack is /models/...: the files come mapped (fx_files), not looked up there
+        inner = {k: "/models/" + os.path.relpath(v, self.root) for k, v in files.items()}
+        argv = engines.command_of(dict(spec, model=inner["dir"], fx_files=inner))
+        cfg = json.loads(argv[argv.index("--fx-config-json") + 1])
+        self.assertEqual(cfg["args"][cfg["args"].index("--ple-gguf") + 1], inner["ple"])
+        gguf = Path(self.root, "plain.gguf"); gguf.write_bytes(b"GGUF")
+        self.assertIn("-np", engines.command_of(dict(spec, model=str(gguf))))
+
 if __name__ == "__main__":
     unittest.main()

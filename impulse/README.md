@@ -6,7 +6,7 @@ Status: version 0.1.1, unreleased, the first release with Nebula (`CHANGELOG.md`
 
 | | |
 |---|---|
-| Models | Gemma 4 26B-A4B and 31B; Qwen3.6-35B-A3B, Qwen3.8-27B and other `qwen35` models; Qwen3.8 Flash-Next (`qwen4exp`); LFM2.5-24B-A2B (`docs/QWEN36.md`, `docs/LFM25.md`) |
+| Models | Gemma 4 26B-A4B and 31B; Qwen3.6-35B-A3B, Qwen3.8-27B and other `qwen35` models; Qwen3.8 Flash-Next (`qwen4exp`); LFM2.5-24B-A2B; Recursive's Flint 40B-A2.5B, Q4 and Q6 (`docs/QWEN36.md`, `docs/LFM25.md`, `docs/FLINT.md`) |
 | Expert models on one 12 GB card | each layer's experts are cached on the GPU and adapt to the conversation; misses go to a CPU expert pool in the same step; swaps run on a copy stream (`docs/HOW-IT-WORKS.md`) |
 | Several GPUs | layer split (`-sm layer -ts …`), and tensor split (`-sm tensor`) for dense models and for expert models whose experts all fit on the cards |
 | Serving | parallel slots (`-np`), MTP drafters, a prompt cache (in RAM too, with `--cache-ram`), the image projector placed on demand, LoRA adapters (`--lora`, Gemma 4) |

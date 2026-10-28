@@ -79,6 +79,9 @@ class HaloEngineTest(unittest.TestCase):
         self.env = env
         self.envp = mock.patch.dict(os.environ, env)      # for the whole test: Halo places itself on its own thread
         self.envp.start()
+        unpublished = mock.patch("nebula.pieces.pin", return_value=None)   # the runtimes here only: no piece downloads
+        unpublished.start()
+        self.addCleanup(unpublished.stop)
         self.srv = make_server(Config.from_args(["--config", path]))
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         end = time.time() + 30
@@ -154,8 +157,14 @@ class HaloEngineRuntimeTest(HaloEngineTest):
         from nebula import halo_engine as HE
         with mock.patch.dict(os.environ, {"NEBULA_HALO_SERVER": ""}), \
                 mock.patch("nebula.packages.locate", return_value="/opt/impulse/impulse-server"), \
+                mock.patch.object(HE, "find_portable", return_value="/cfg/nebula-impulse-portable/impulse-server"), \
                 mock.patch.object(HE, "find_llama_server", return_value=["/opt/halo/llama-server"]):
-            self.assertEqual(HE.find_servers(), [("Impulse", ["/opt/impulse/impulse-server"]), ("llama.cpp", ["/opt/halo/llama-server"])])
+            with mock.patch.object(HE, "has_nvidia", return_value=True):
+                self.assertEqual(HE.find_servers(), [("Impulse", ["/opt/impulse/impulse-server"]),
+                                                     ("Impulse portable", ["/cfg/nebula-impulse-portable/impulse-server"]),
+                                                     ("llama.cpp", ["/opt/halo/llama-server"])])
+            with mock.patch.object(HE, "has_nvidia", return_value=False):          # Impulse's CUDA build cannot start: not tried
+                self.assertEqual([rt for rt, _ in HE.find_servers()], ["Impulse portable", "llama.cpp"])
         broken = [sys.executable, "-c", "import sys; sys.exit(3)"]                    # an Impulse that cannot run it
         fake = [sys.executable, self.fake]
         with mock.patch.dict(os.environ, self.env), \
@@ -254,7 +263,8 @@ class HaloEngineAbsentTest(unittest.TestCase):
         tmp = tempfile.mkdtemp()
         path = os.path.join(tmp, "nebula.json")
         json.dump({"port": free_port(), "ledger": os.path.join(tmp, "l.sqlite3"), "monitor": False, "tiers": []}, open(path, "w"))
-        with mock.patch.dict(os.environ, {"NEBULA_HALO_SERVER": "", "PATH": tmp}):
+        with mock.patch.dict(os.environ, {"NEBULA_HALO_SERVER": "", "PATH": tmp}), \
+                mock.patch("nebula.pieces.pin", return_value=None):    # Impulse portable not published: nothing to fetch
             srv = make_server(Config.from_args(["--config", path]))
         try:
             self.assertEqual(srv.halo_engine.state, "unavailable")
@@ -308,6 +318,81 @@ class HaloRadeonTest(unittest.TestCase):
     def test_integrated_graphics_alone_is_not_a_gpu_for_halo(self):
         self.start([["Vulkan0", "Intel(R) UHD Graphics", 8000, 8000]], [])
         self.assertEqual(self.srv.halo_engine.view()["where"], "cpu")
+
+
+@unittest.skipIf(os.name == "nt", "the stand-in runtime is a shell script")
+class HaloPortableRuntimeTest(unittest.TestCase):
+    """No NVIDIA card and no runtime: Nebula downloads Impulse portable (pinned, sha256 checked), says so, and Halo runs on it."""
+
+    def start(self, good_sha=True):
+        import hashlib
+        import tarfile
+        from nebula import halo_engine as HE, pieces
+        self.tmp = tempfile.mkdtemp()
+        fake = os.path.join(self.tmp, "fake_llama_server.py")
+        Path(fake).write_text(FAKE)
+        pkg = os.path.join(self.tmp, "pkg")
+        os.makedirs(pkg)
+        Path(pkg, "impulse-server").write_text(f'#!/bin/sh\nexec "{sys.executable}" "{fake}" "$@"\n')
+        os.chmod(os.path.join(pkg, "impulse-server"), 0o755)
+        arc = os.path.join(self.tmp, "impulse-portable-9.9-linux-x86_64.tar.gz")
+        with tarfile.open(arc, "w:gz") as t:
+            t.add(os.path.join(pkg, "impulse-server"), arcname="impulse-server")
+        sha = hashlib.sha256(Path(arc).read_bytes()).hexdigest() if good_sha else "0" * 64
+        pins = os.path.join(self.tmp, "pieces.json")
+        json.dump({"version": "9.9", "url": "file://" + self.tmp + "/{piece}-{version}-{platform}.{ext}",
+                   "pieces": {"impulse-portable": {"label": "Impulse portable", "why": "Halo's runtime without an NVIDIA card",
+                                                   "program": "impulse-server",
+                                                   "files": {"linux-x86_64": {"ext": "tar.gz", "sha256": sha, "bytes": os.path.getsize(arc)}}}}},
+                  open(pins, "w"))
+        base = os.path.join(self.tmp, "base.gguf")
+        Path(base).write_bytes(b"GGUF")
+        path = os.path.join(self.tmp, "nebula.json")
+        json.dump({"port": free_port(), "ledger": os.path.join(self.tmp, "l.sqlite3"), "monitor": False, "tiers": []}, open(path, "w"))
+        self.patches = [mock.patch.dict(os.environ, {"NEBULA_HALO_SERVER": "", "NEBULA_HALO_BASE": base, "NEBULA_FAKE_CARDS": "[]",
+                                                     "FAKE_DEVICES": "[]"}),
+                        mock.patch.object(pieces, "CATALOG", Path(pins)), mock.patch.object(pieces, "platform_key", return_value="linux-x86_64"),
+                        mock.patch.object(HE, "find_llama_server", return_value=None), mock.patch.object(HE.HaloEngine, "RETRY_S", 0.5)]
+        for p in self.patches:
+            p.start()
+        self.srv = make_server(Config.from_args(["--config", path]))
+        return self.srv.halo_engine
+
+    def tearDown(self):
+        self.srv.halo_engine.state = "stopped"
+        self.srv.server_close(); self.srv.tools.close()
+        for p in self.patches:
+            p.stop()
+
+    def wait(self, eng, until, s=30):
+        end = time.time() + s
+        while not until() and time.time() < end:
+            time.sleep(0.2)
+
+    def test_it_downloads_the_runtime_says_so_and_runs_on_it(self):
+        eng = self.start()
+        self.wait(eng, eng.ready)
+        v = eng.view()
+        self.assertTrue(eng.ready(), v)
+        self.assertEqual((v["runtime"], v["where"]), ("Impulse portable", "cpu"))
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "nebula-impulse-portable", "impulse-server")))
+        self.assertEqual(self.srv.halo._ask_model("anything new?"), "all calm, from Halo's own model")
+
+    def test_a_download_that_does_not_check_out_is_refused(self):
+        import threading
+        from nebula import pieces
+        hold, real = threading.Event(), pieces.fetch
+        held = mock.patch.object(pieces, "fetch", side_effect=lambda *a, **k: (hold.wait(10), real(*a, **k))[1])
+        held.start()                                       # the download waits until the announcement has been read
+        self.addCleanup(held.stop)
+        eng = self.start(good_sha=False)
+        self.assertEqual(eng.state, "downloading")
+        self.assertIn("Impulse portable", eng.why)                                         # said plainly: what and why
+        self.assertIn("to keep the download small", eng.why)
+        hold.set()
+        self.wait(eng, lambda: "sha256" in (eng.why or ""), 10)
+        self.assertIn("does not match its sha256", eng.why)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "nebula-impulse-portable")))
 
 
 class LoraPathsOnWindowsTest(unittest.TestCase):

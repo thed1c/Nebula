@@ -157,6 +157,26 @@ class GravityNode:
     def peer(self, pid: str) -> dict | None:
         return next((p for p in self.section()["peers"] if p["id"] == pid), None)
 
+    def fresh_addr(self, pid: str, addr) -> bool:
+        """A peer's current address, as it said it on a call: kept instead of the one from its invite, so a peer whose
+        IP or relay changed is still reached (only its own id's, well formed; a cached connection to the old one goes)."""
+        if not isinstance(addr, dict) or addr.get("id") != pid:
+            return False
+        relay, direct = addr.get("relay"), addr.get("direct") or []
+        if not (relay is None or isinstance(relay, str)) or not isinstance(direct, list) or not all(isinstance(d, str) for d in direct):
+            return False
+        new = {"id": pid, "relay": relay, "direct": sorted(direct)[:16]}
+        with self.lock:
+            p = self.peer(pid)
+            old = (p or {}).get("addr") or {}
+            if p is None or (old.get("relay"), sorted(old.get("direct") or [])) == (relay, new["direct"]):
+                return False
+            p["addr"] = new
+            for k in [k for k in self.conns if k[0] == pid]:
+                self.conns.pop(k, None)
+        self.save()
+        return True
+
     # --- the key and the endpoint
     def key_path(self) -> str | None:
         from nebula import names
@@ -212,7 +232,8 @@ class GravityNode:
         """Ask one member what it offers this Nebula: its models granted here (a route) and the names of the rest (no route)."""
         was = self.seen.get(pid) or {"offers": [], "unrouted": []}
         try:
-            r = self.ask(pid, MODELS, {}, timeout=10)
+            r = self.ask(pid, MODELS, {"addr": self.addr()}, timeout=10)    # each side says where it is now
+            self.fresh_addr(pid, r.get("addr"))
             now = {"offers": [m["name"] for m in r.get("models") or [] if m.get("name")],
                    "unrouted": [str(n) for n in r.get("unrouted") or []], "reachable": True, "at": time.time()}
         except Exception as e:  # noqa: BLE001 - away: keep what it offered last, marked away
@@ -288,7 +309,21 @@ class GravityNode:
         blob = {"v": 1, "addr": self.addr(), "secret": secret, "kind": kind, "name": self.my_name()}
         text = INVITE_PREFIX + base64.urlsafe_b64encode(json.dumps(blob, separators=(",", ":")).encode()).decode().rstrip("=")
         return {"invite": text, "id": iid, "kind": kind, "expires_in_s": ttl_s, "grants": grants,
-                "note": "it works once; anyone holding it can join until then, so send it privately"}
+                "reach": self.reach(), "reach_note": self.reach_note(),
+                "note": "it works once; anyone holding it can join until then, so send it privately. " + self.reach_note()}
+
+    def reach(self) -> str:
+        """How a joiner gets here: "gateway" (a relay of this Nebula's own), "public" (iroh's public relays: the joiner
+        must turn them on too) or "lan" (no relay: only from this network)."""
+        g = self.section()
+        return "gateway" if g["relays"] else "public" if g.get("public_relay") else "lan"
+
+    def reach_note(self) -> str:
+        return {"gateway": "From outside your network it comes in through your gateway.",
+                "public": "If your friend is not on your network, they must also turn on \"Use the public relay\" "
+                          "(Gravity tab) before they join.",
+                "lan": "It works only on your own network: for a friend elsewhere, turn on \"Use the public relay\" "
+                       "(both of you) or set up a gateway, then make a new invite."}[self.reach()]
 
     def cancel_invite(self, iid: str) -> bool:
         g = self.section()
@@ -337,7 +372,16 @@ class GravityNode:
         a = inv["addr"]
         if a["id"] == self.node_id():
             raise GravityError(400, "that invite is this Nebula's own")
-        reply = self._run(self._ask(a, ENROLL, {"secret": inv["secret"], "name": self.my_name(), "addr": self.addr()}), 60)
+        try:
+            reply = self._run(self._ask(a, ENROLL, {"secret": inv["secret"], "name": self.my_name(), "addr": self.addr()}), 60)
+        except Exception as e:  # noqa: BLE001 - say what most often stops it: no relay on this side for the inviter's
+            hint = ""
+            if a.get("relay") and not self.section()["relays"] and not self.section().get("public_relay"):
+                hint = (" Their Nebula is reached through a relay and this one has the relay off: turn on \"Use the "
+                        "public relay\" in the Gravity tab, then join again.")
+            elif not a.get("relay"):
+                hint = " Their invite has no relay, so it works only on their network."
+            raise GravityError(502, f"the Nebula that made the invite cannot be reached: {e}.{hint}") from None
         if not reply.get("ok"):
             raise GravityError(403, reply.get("why") or "the invite was refused")
         row = {"id": a["id"], "name": reply.get("name") or inv.get("name") or a["id"][:8], "addr": a, "grants": [],
@@ -531,7 +575,8 @@ class _Handler:
             conn.close(1, b"not a peer")
             return
         if self.alpn == MODELS:
-            return await _reply(bi, {"ok": True, "models": self._granted(p), "unrouted": self._unrouted(p)})
+            node.fresh_addr(remote, req.get("addr"))
+            return await _reply(bi, {"ok": True, "models": self._granted(p), "unrouted": self._unrouted(p), "addr": node.addr()})
         if self.alpn == LOAD:
             return await _reply(bi, {"ok": True, "pending": self._pending(p)})
         if self.alpn == INFER:

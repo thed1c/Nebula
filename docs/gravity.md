@@ -9,7 +9,12 @@ Every Nebula has two doors: the **API Node** (HTTP, for apps and agents, a key p
   make (Gravity › Invite a friend / Invite one of my machines): a one-time ticket with this node's addresses, your
   gateway's address if you have one, and a secret. It works once and expires.
 - **On your network the two connect directly; elsewhere through your gateway**, your own iroh relay (Gravity ›
-  Gateway). Public relays are never used. A relay only forwards encrypted traffic it cannot read.
+  Gateway), or through iroh's free public relays when you tick "Use the public relay" (off until you do). A friend
+  reached that way must tick it on their Nebula too; the invite says so. A gateway of your own wins over the public
+  relays. A relay only forwards encrypted traffic it cannot read.
+- **Addresses follow the peer.** The invite carries this node's addresses as they were; afterwards each look a member
+  takes at another (every 20 seconds while both are up) carries its current addresses, and both keep the newest, so a
+  changed IP or home relay does not strand a peer as long as one side can still reach the other.
 - **A peer gets nothing until you tick a model for it**, and only models shared with guests (docs/sharing.md): at your
   Nebula it is its own tenant, with its own cache and its own history.
 - **Anti-Gravity:** a cloud model (your API key, your bill, the provider's terms) or a CLI on your own account can

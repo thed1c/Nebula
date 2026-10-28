@@ -1049,12 +1049,13 @@
   // the sessions: a drop-down in the conversation's header, "New session" first
   async function loadSessions() {
     state.sessions = await api("/api/sessions");
-    const nClosed = state.sessions.filter(s => s.lifecycle === "closed").length;
+    const nClosed = state.sessions.filter(s => s.lifecycle === "closed").length, nAll = state.sessions.length;
     $("sessions").innerHTML = `<li><button class="sess new" data-id=""><b>＋ New session</b><small>an empty conversation</small></button></li>` + state.sessions.map(s => `
       <li class="srow"><button class="sess ${s.session_id === state.sid ? "on" : ""} ${s.lifecycle === "closed" ? "closed" : ""}" role="option" data-id="${esc(s.session_id)}">
         <b>${esc(s.title)}</b><small>${s.turns} turn${s.turns === 1 ? "" : "s"} · <span style="color:${colour(s.current_tier)}">${esc(s.current_tier || "—")}</span>${s.lifecycle === "closed" ? " · closed" : ""} · ${ago(s.updated_at)}</small>
       </button><button class="sdel" data-del="${esc(s.session_id)}" title="delete this conversation" aria-label="delete ${esc(s.title)}">✕</button></li>`).join("")
-      + (nClosed ? `<li><button class="sess sdelall" data-delclosed="1"><b>Delete closed conversations (${nClosed})</b><small>for good: their messages are removed from this computer</small></button></li>` : "");
+      + (nClosed ? `<li><button class="sess sdelall" data-delclosed="1"><b>Delete closed conversations (${nClosed})</b><small>for good: their messages are removed from this computer</small></button></li>` : "")
+      + (nAll > nClosed ? `<li><button class="sess sdelall" data-delall="1"><b>Delete all conversations (${nAll})</b><small>open and closed, for good: their messages are removed from this computer</small></button></li>` : "");
     for (const el of $("sessions").querySelectorAll(".sess[data-id]")) el.onclick = () => { pick(false); if (el.dataset.id) open(el.dataset.id); else fresh(); };
     for (const el of $("sessions").querySelectorAll(".sdel")) el.onclick = (e) => {
       e.stopPropagation(); const s = state.sessions.find(x => x.session_id === el.dataset.del);
@@ -1062,6 +1063,8 @@
     };
     const all = $("sessions").querySelector("[data-delclosed]");
     if (all) all.onclick = (e) => { e.stopPropagation(); deleteSessions({ closed: true }, `Delete ${nClosed} closed conversation${nClosed === 1 ? "" : "s"} for good? Their messages are removed from this computer.`); };
+    const every = $("sessions").querySelector("[data-delall]");
+    if (every) every.onclick = (e) => { e.stopPropagation(); deleteSessions({ all: true }, `Delete all ${nAll} conversation${nAll === 1 ? "" : "s"}, open and closed, for good? Their messages are removed from this computer.`); };
   }
   // deleting conversations for good (POST /api/sessions/delete): asked first; one with a reply on the way is kept
   async function deleteSessions(body, question) {
@@ -2705,8 +2708,8 @@
     if (oshellOpen) return;                          // a policy or the profile is open: leave it
     let v; try { v = await api("/api/yard/openshell"); } catch (e) { $("oshell").textContent = e.message; return; }
     if (!v.available) { $("oshell").innerHTML = `${esc(v.why)}. Engines can still run on this machine.`; return; }
-    const gw = (v.gateways || []).map(g => `${esc(g.name || "?")} ${g.endpoint ? "· " + esc(g.endpoint) : ""}`).join(", ") || "none registered";
-    $("oshell").innerHTML = `<div>Gateways: ${gw}</div><table class="ptable">${(v.sandboxes || []).map(sb => `<tr><td><b>${esc(sb.name)}</b></td><td>${esc(sb.phase || sb.status || "")}</td>
+    const gw = (Array.isArray(v.gateways) ? v.gateways : []).map(g => `${esc(g.name || "?")} ${g.endpoint ? "· " + esc(g.endpoint) : ""}`).join(", ") || "none registered";
+    $("oshell").innerHTML = `<div>Gateways: ${gw}</div><table class="ptable">${(Array.isArray(v.sandboxes) ? v.sandboxes : []).map(sb => `<tr><td><b>${esc(sb.name)}</b></td><td>${esc(sb.phase || sb.status || "")}</td>
       <td><button class="btn" data-pol="${esc(sb.name)}">Policy</button>${/^(nebeng-|nebula-engine-)/.test(String(sb.name)) ? ` <button class="btn" data-del="${esc(sb.name)}">Stop</button>` : ""}</td></tr>`).join("") || '<tr><td class="muted">no sandboxes</td></tr>'}</table>
       <button class="btn" id="oprof">Use this Nebula from a sandbox</button><pre class="cmdline" id="opre" hidden></pre>`;
     for (const b of document.querySelectorAll("#oshell [data-pol]")) b.onclick = async () => { oshellOpen = true;
@@ -2818,7 +2821,10 @@
     const s = spec || { kind: "impulse", host: "127.0.0.1", slots: 1 }, cards = engView?.cards || [], form = $("eng-form");
     const opt = (list, cur) => list.map(x => `<option ${String(x) === String(cur ?? "") ? "selected" : ""}>${esc(x)}</option>`).join("");
     const field = (k, label, type = "text", ph = "") => `<label>${label}<input name="${k}" type="${type}" placeholder="${esc(ph)}" value="${esc(Array.isArray(s[k]) ? s[k].join(" ") : (s[k] ?? ""))}"></label>`;
-    const base = () => field("name", "Name", "text", "small") + `<label>Package<select name="kind">${opt(engView?.kinds || ["impulse"], s.kind)}</select></label>`
+    // editing keeps the engine's name (its routes find it by name): a new name is "Save as a copy"
+    const nameField = () => spec ? `<label>Name<input name="name" value="${esc(s.name)}" readonly title="to run it under another name, Save as a copy"></label>` : field("name", "Name", "text", "small");
+    const running = !!spec && ["ready", "loading", "starting"].includes((engView?.engines || []).find(x => x.name === spec.name)?.state);
+    const base = () => nameField() + `<label>Package<select name="kind">${opt(engView?.kinds || ["impulse"], s.kind)}</select></label>`
       + field("binary", "Engine binary (blank: the package's own)", "text", "") + field("model", "Model file (.gguf)", "text", "models/small.gguf")
       + field("host", "Listens on") + field("port", "Port", "number", "8080") + field("context", "Context per slot", "number", "32768")
       + field("slots", "Parallel slots", "number")
@@ -2835,10 +2841,24 @@
             <div class="row"><button class="btn" type="button" id="eng-rawchk">Show the changes</button><button class="btn" type="button" id="eng-rawin">Read into the settings</button>
             <span class="muted">Flags without a setting are kept as written. Nebula's own (this machine only, its key, its pages off, the cache kept per guest) are put back on every start.</span></div>
             <pre class="cmdline" id="eng-rawout"></pre></details></div>`)
-        + `<div class="row"><button class="btn pri" type="submit">${spec ? "Save as a new deployment" : "Add the engine"}</button><button class="btn" type="button" id="eng-cancel">Cancel</button><span class="muted" id="eng-ferr"></span></div>`;
+        + `<div class="row"><button class="btn pri" type="submit">${spec ? "Save" : "Add the engine"}</button>`
+        + (running ? `<button class="btn" type="button" id="eng-saverun" title="save, then restart it on the saved settings">Save and restart</button>` : "")
+        + (spec ? `<button class="btn" type="button" id="eng-copy" title="a second engine with these settings, under its own name and port">Save as a copy…</button>` : "")
+        + `<button class="btn" type="button" id="eng-cancel">Cancel</button><span class="muted" id="eng-ferr"></span></div>`
+        + (spec ? `<div class="row" style="grid-column:1/-1"><small class="muted">Save changes this engine (the previous settings are kept: Undo goes back to them)${running ? "; it runs the old settings until it is restarted" : ""}.</small></div>` : "");
       form.querySelector('[name="kind"]').value = kind;
       form.querySelector('[name="kind"]').onchange = (e) => { s.kind = e.target.value; s.options = {}; draw(e.target.value); };
       $("eng-cancel").onclick = () => { form.hidden = true; };
+      if ($("eng-saverun")) $("eng-saverun").onclick = () => save(true);
+      if ($("eng-copy")) $("eng-copy").onclick = async () => {
+        const taken = new Set((engView?.engines || []).map(x => x.name));
+        let name = s.name + "-copy"; for (let i = 2; taken.has(name); i++) name = `${s.name}-copy${i}`;
+        name = prompt("The copy's name:", name); if (!name) return;
+        if (taken.has(name)) { $("eng-ferr").textContent = `there is already an engine named ${name}`; return; }
+        const ports = (engView?.engines || []).map(x => Number(x.spec?.port || x.port) || 0);
+        const out = { ...collect(), name, port: Math.max(Number(collect().port) || 8080, ...ports) + 1 };
+        try { await postJ("/api/yard/engines", out); form.hidden = true; loadEngines(); } catch (e) { $("eng-ferr").textContent = e.message; }
+      };
       livePreview(form, collect, $("eng-cmd"));
       if ($("eng-raw")) {
         $("eng-rawd").ontoggle = () => { if ($("eng-rawd").open && !$("eng-raw").value) $("eng-raw").value = $("eng-cmd").textContent.split("\n#")[0].trim(); };
@@ -2865,10 +2885,14 @@
     };
     draw(s.kind || "impulse");
     form.hidden = false;
-    form.onsubmit = async (ev) => {
-      ev.preventDefault();
-      try { await postJ("/api/yard/engines", collect()); form.hidden = true; loadEngines(); } catch (e) { $("eng-ferr").textContent = e.message; }
+    const save = async (restart) => {
+      try {
+        const r = await postJ("/api/yard/engines", collect());
+        if (restart && r.changed !== false) await postJ(`/api/yard/engines/${encodeURIComponent(r.name)}/restart`, {});
+        form.hidden = true; loadEngines();
+      } catch (e) { $("eng-ferr").textContent = e.message; }
     };
+    form.onsubmit = (ev) => { ev.preventDefault(); save(false); };
   }
 
   // ---- the Callers tab (GET /api/yard/callers; POST /api/yard/callers[/<id>/keys|/remove])
@@ -3118,14 +3142,17 @@
     if (wz.job) {
       const j = wz.job, r = j.result || {};
       h += `<ul class="plan">${j.steps.map(st => `<li class="${st.state === "failed" ? "bad" : ""}">${esc(st.what)}${st.state === "running" ? " …" : st.state === "failed" ? " — failed" : " ✓"}${st.progress && st.progress[1] ? ` (${Math.round(100 * st.progress[0] / st.progress[1])}%)` : ""}</li>`).join("")}</ul>`;
-      if (j.state === "failed") h += `<p class="bad">${esc(j.error || "it failed")}. Everything it had done was taken back.</p>`;
+      if (j.state === "failed") h += `<p class="bad">${esc(j.error || "it failed")}. Everything it had done was taken back.</p>` +
+        (/wslconfig/.test(j.error || "") ? '<button type="button" class="btn" data-wz-wslmem>Let Nebula use more memory</button>' : "");
       if (j.state === "done") {
         h += `<p>Done.</p>`;
         if (r.test) h += r.test.ok ? `<p>It answered: <i>${esc(r.test.reply)}</i></p>` : `<p class="warn">The test message did not get an answer: ${esc(r.test.error || "")}</p>`;
         if (r.invite) h += `<p>Send this to your friend, privately. It works once.</p><pre class="inv">Join me on Nebula!
-1. Install Nebula and open it.
+1. Install Nebula and open it.${r.reach === "public" ? `
+   If we are not on the same network: in its Gravity tab, turn Gravity on and tick “Use the public relay”.` : ""}
 2. Open this link on the same computer: http://127.0.0.1:8090/#join=${esc(encodeURIComponent(r.invite))}
-   (or choose “Join a friend's Nebula” and paste: ${esc(r.invite)})</pre><button type="button" class="btn" data-wz-copy>Copy</button>`;
+   (or choose “Join a friend's Nebula” and paste: ${esc(r.invite)})</pre><button type="button" class="btn" data-wz-copy>Copy</button>`
+          + (r.reach === "lan" ? `<p class="warn">${esc(r.reach_note || "")}</p>` : "");
         if (r.joined) h += `<p>You joined ${esc(r.joined)}'s Nebula.${(r.models || []).length ? " You can now use: " + r.models.map(esc).join(", ") + "." : " They have not shared a model with you yet."}</p>`;
         if (r.key) h += `<p>Its key, shown this once (give it to the app; Nebula keeps only its hash):</p><pre class="inv">${esc(r.key)}</pre>` +
           `<p class="help">The app's address: port ${esc(String(r.port))} on ${wz.answers.scope === "lan" ? "this machine's network address" : "127.0.0.1"}.</p>`;
@@ -3139,6 +3166,7 @@
       const p = wz.plan;
       h += `<p>This is what will happen. Nothing has changed yet.</p><ul class="plan">${p.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>` +
            (p.warnings || []).map(w => `<p class="warn">⚠ ${esc(w)}</p>`).join("") +
+           ((p.warnings || []).some(w => /Let Nebula use more memory/.test(w)) ? '<button type="button" class="btn" data-wz-wslmem>Let Nebula use more memory</button>' : "") +
            (p.confirm || []).map(m => `<label class="opt"><input type="checkbox" data-wz-confirm="${esc(m)}" ${(wz.answers.confirm || []).includes(m) ? "checked" : ""}> I understand the warning about ${esc(m)}: share it anyway</label>`).join("") +
            (wz.err ? `<p class="bad">${esc(wz.err)}</p>` : "");
       foot = '<button type="button" class="btn" data-wz-back>Back</button><button type="button" class="btn" data-wz-close>Cancel</button><span class="grow"></span><button type="button" class="btn pri" data-wz-apply>Apply</button>';
@@ -3170,6 +3198,7 @@
       wzRender(); wzPoll();
     });
     on("[data-wz-undo]", async () => { if (!confirm("Undo what this wizard did?")) return; try { wz.job = await postJ(`/api/wizards/jobs/${wz.job.id}/undo`, {}); } catch (e) { wz.err = e.message; } wzRender(); });
+    on("[data-wz-wslmem]", () => wslMemory());
     on("[data-wz-copy]", () => { const t = body.querySelector("pre.inv"); copyText(t ? t.textContent : wz.job.result.invite, body.querySelector("[data-wz-copy]")); });
     for (const r of body.querySelectorAll('input[type=radio]')) r.onchange = () => { wzRead(); for (const c of body.querySelectorAll(".mcard")) c.classList.toggle("on", c.querySelector("input").checked); };
     const shapes = (k) => wz.def.steps.some(st => st.fields.some(f => f.when_field === k) || (st.when && k in st.when));
@@ -3177,6 +3206,20 @@
     for (const c of body.querySelectorAll('input[name=variant]')) c.addEventListener("change", () => {     // Standard or Uncensored: the cards change
       wzRead(); for (const st of wz.def.steps) for (const f of st.fields) if (f.options_from === "catalog" || f.options_from === "friend_catalog") delete wz.opts[f.key];
       delete wz.answers.model; wzRender(); });
+  }
+  // WSL's share of the PC's RAM (nebula/wslmem.py): a click, a first yes to change .wslconfig (backed up), a second yes to
+  // restart WSL (it closes Nebula too); Undo puts the backup back. Never without these clicks.
+  async function wslMemory() {
+    let p; try { p = await api("/api/wsl/memory"); } catch (e) { alert(e.message); return; }
+    if (!confirm(`${p.about}\n\n.wslconfig: ${p.path}\nmemory now: ${p.memory_now || "not set (half the PC's RAM)"} → ${p.memory_new}\n\nChange it now?`)) return;
+    let a; try { a = await postJ("/api/wsl/memory/apply", {}); } catch (e) { alert(e.message); return; }
+    if (confirm(`Done: .wslconfig says memory=${a.memory_new} (the old file is kept as ${a.backup}).\n\nRestart WSL now? This closes every WSL program, Nebula too. Open Nebula again after it closes.\n\nCancel keeps the change for the next time WSL starts, and offers to undo it.`)) {
+      try { await postJ("/api/wsl/memory/restart", { confirm: true }); } catch (e) { alert(e.message); }
+      return;
+    }
+    if (confirm("Undo the change to .wslconfig?")) {
+      try { await postJ("/api/wsl/memory/undo", { backup: a.backup, had_file: a.had_file }); alert("The old .wslconfig is back."); } catch (e) { alert(e.message); }
+    }
   }
   async function wzPoll() {
     while (wz && wz.job && wz.job.state === "running") {
@@ -4720,6 +4763,7 @@
       <p>You have ${esc(upd.current)}.${upd.published ? ` <span class="muted">Released ${esc(upd.published)}.</span>` : ""}</p>
       ${upd.notes ? `<h4>What is new</h4><pre>${esc(upd.notes)}</pre>` : ""}
       ${busy ? `<p>${esc(updDoing[upd.installing] || upd.installing)}</p>` : upd.installing ? `<p style="color:var(--crit)">The update did not finish: ${esc(upd.installing.slice(8))}. Nebula is still the version you had.</p>` : ""}
+      ${upd.can_install && upd.kind === "small" ? `<p class="muted">A small update: Nebula's own code only${upd.size_mb ? ` (about ${upd.size_mb} MB)` : ""}, since nothing beside it changed. Nebula closes for a moment and opens again.</p>` : ""}
       <p class="muted">${upd.can_install ? "Your conversations and settings stay as they are." : "This opens the download page. Run the new installer from there: your conversations and settings stay as they are."}</p>
       <div class="row"><button class="btn" id="updx">Not now</button><button class="btn pri" id="updgo" ${busy ? "disabled" : ""}>${upd.can_install ? "Update now" : "Get update"}</button></div>`;
     $("updx").onclick = () => $("upddlg").close();

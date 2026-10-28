@@ -2,7 +2,7 @@
 # needs to pip install"). Setup.exe copies the small payload and runs this; its lines show in Setup's window.
 #   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Dest <install folder> -Conf <settings folder>
 # 1. Python (python-build-standalone, pinned, sha256 checked), 2. Nebula and its packages with pip at the versions
-# tested (constraints.txt), 3. python -m nebula.prereqs: CUDA's DLLs beside Impulse and llama-server (with an NVIDIA
+# tested (constraints.txt), 3. python -m nebula.prereqs: CUDA's DLLs beside Impulse (with an NVIDIA
 # driver), Halo's model, Lookup's and docling's models. Each failure says what to do; nothing needs an administrator.
 param([Parameter(Mandatory = $true)][string]$Dest, [Parameter(Mandatory = $true)][string]$Conf)
 $ErrorActionPreference = "Stop"
@@ -36,6 +36,10 @@ New-Item -ItemType Directory -Force $Conf | Out-Null
 $ErrorActionPreference = "Continue"
 & $py @pipArgs *> (Join-Path $Conf "pip.log")
 if ($LASTEXITCODE -ne 0) { Say ("Installing Nebula's packages failed (see {0}): check the connection and run Setup again." -f (Join-Path $Conf "pip.log")); exit 1 }
+
+# what this installer put in place: Nebula's updater offers a small update (code alone) to an install made by its base
+$info = @{ base = $online.version; version = $online.version; extras = $online.extras; extra_index = "$($online.extra_index)" } | ConvertTo-Json -Compress
+[IO.File]::WriteAllText((Join-Path $Dest "app\install.json"), $info, (New-Object Text.UTF8Encoding $false))
 
 Say "Fetching what Nebula needs beside itself (Halo's model, Lookup's models, CUDA's libraries)..."
 $env:PYTHONIOENCODING = "utf-8"

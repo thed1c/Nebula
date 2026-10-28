@@ -97,6 +97,155 @@
      "maker": "Alibaba (unsloth's Q4_K_M of the official model)"
     }
    }
+  },
+  {
+   "id": "qwen38-flashnext",
+   "name": "Qwen3.8 Flash-Next",
+   "maker": "Alibaba (Qwen), in the GGUF file you choose",
+   "about": "The strongest here: 177B parameters, 3B at a time, for big jobs. You choose the file: paste a Hugging Face link and Nebula shows its sizes, checks it is Flash-Next and says whether it fits before anything downloads. Text only.",
+   "needs": {
+    "gpu_mb": 12000
+   },
+   "verified": "impulse/CHANGELOG.md 0.2.4: Qwen3.8 Flash-Next (qwen4exp) in Impulse's Qwen engine, the same logits as llama.cpp b6b003d bit for bit; any qwen4exp GGUF (the experts stay in RAM, so its RAM need follows the file's size)",
+   "flashnext": true,
+   "friends": false,
+   "variants": {
+    "standard": {}
+   },
+   "ask_repo": true,
+   "example_repo": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF",
+   "architectures": [
+    "qwen4exp"
+   ],
+   "context": 32768
+  },
+  {
+   "id": "flint-40b",
+   "name": "Flint 40B (Q4)",
+   "maker": "Recursive",
+   "licence": "Apache-2.0",
+   "context": 32768,
+   "sampling": {
+    "temp": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0
+   },
+   "friends": true,
+   "about": "Built for coding: reads a codebase, fixes bugs, calls tools, thinks before it answers when it needs to. Text only. Q4: the smaller file. Runs on an 8 GB card and up with about 27 GB of free RAM for its experts; two cards that hold all of it write about twice as fast.",
+   "repo": "unsloth/flint-GGUF",
+   "revision": "20468edfc38ab43d6914cc88b08cbecb05d0fc62",
+   "file": "flint-UD-Q4_K_XL.gguf",
+   "sha256": "63c2ecc461ca545134b670c660e76fa20f47240f8d39b6510bfd21c4dd6e072f",
+   "download_gb": 25.1,
+   "needs": {
+    "gpu_mb": 7900,
+    "ram_mb": 40000,
+    "ram_free_mb": 26900,
+    "disk_mb": 26000
+   },
+   "layouts": [
+    {
+     "id": "all-on-cards",
+     "cards": 2,
+     "min_total_mb": 27000,
+     "options": {
+      "n_cpu_moe": 0
+     },
+     "about": "every expert on two cards that hold the whole model: about twice the writing speed of one card"
+    },
+    {
+     "id": "one-card",
+     "cards": 1,
+     "min_total_mb": 7500,
+     "options": {},
+     "about": "the card with the most free memory: the expert cache on it, the experts in RAM"
+    }
+   ],
+   "verified": "impulse/docs/FLINT.md (unsloth's UD-Q4_K_XL: top-1 96.6 % and KL 0.0085 against the BF16 weights on code; HumanEval)",
+   "variants": {
+    "standard": {},
+    "uncensored": {
+     "repo": "dima6312/Flint-40B-A2.5B-abliterated-GGUF",
+     "revision": "7dcfd8c19fa6702a112b9626b76c89d6c799307b",
+     "file": "Flint-40B-A2.5B-abliterated-Q4_K_M.gguf",
+     "sha256": "5ac7c931803a9fff117c5cde1cda6b7bd840f5678b28a31cfe77870e9c201cf7",
+     "download_gb": 24.2,
+     "needs": {
+      "gpu_mb": 7900,
+      "ram_mb": 40000,
+      "ram_free_mb": 26700,
+      "disk_mb": 25000
+     },
+     "content": "uncensored build",
+     "maker": "Recursive (dima6312's abliterated build)",
+     "source": "refusals removed with abliterix; Q4_K_M with a wikitext-2 imatrix"
+    }
+   }
+  },
+  {
+   "id": "flint-40b-q6",
+   "name": "Flint 40B (Q6)",
+   "maker": "Recursive",
+   "licence": "Apache-2.0",
+   "context": 32768,
+   "sampling": {
+    "temp": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0
+   },
+   "friends": true,
+   "about": "Flint at Q6: closest to the full model, the best choice for coding when the computer has the RAM. Runs on an 8 GB card and up with about 38 GB of free RAM for its experts.",
+   "repo": "unsloth/flint-GGUF",
+   "revision": "20468edfc38ab43d6914cc88b08cbecb05d0fc62",
+   "file": "flint-UD-Q6_K_XL.gguf",
+   "sha256": "086231093581c67f8bf2964f8b49198889c4f0775b39857ba63b4c37041279c2",
+   "download_gb": 36.3,
+   "needs": {
+    "gpu_mb": 7900,
+    "ram_mb": 56000,
+    "ram_free_mb": 37500,
+    "disk_mb": 37000
+   },
+   "layouts": [
+    {
+     "id": "all-on-cards",
+     "cards": 2,
+     "min_total_mb": 40000,
+     "options": {
+      "n_cpu_moe": 0
+     },
+     "about": "every expert on two cards that hold the whole model: about twice the writing speed of one card"
+    },
+    {
+     "id": "one-card",
+     "cards": 1,
+     "min_total_mb": 7500,
+     "options": {},
+     "about": "the card with the most free memory: the expert cache on it, the experts in RAM"
+    }
+   ],
+   "verified": "impulse/docs/FLINT.md (unsloth's UD-Q6_K_XL: top-1 98.0 % and KL 0.0033 against the BF16 weights on code; HumanEval)",
+   "variants": {
+    "standard": {},
+    "uncensored": {
+     "repo": "dima6312/Flint-40B-A2.5B-abliterated-GGUF",
+     "revision": "7dcfd8c19fa6702a112b9626b76c89d6c799307b",
+     "file": "Flint-40B-A2.5B-abliterated-Q6_K.gguf",
+     "sha256": "0e8c78c08ea7000794230cfa8ebb6e976455dad33691a4e39e07bba846864475",
+     "download_gb": 32.7,
+     "needs": {
+      "gpu_mb": 7900,
+      "ram_mb": 48000,
+      "ram_free_mb": 34500,
+      "disk_mb": 34000
+     },
+     "content": "uncensored build",
+     "maker": "Recursive (dima6312's abliterated build)",
+     "source": "refusals removed with abliterix; Q6_K with a wikitext-2 imatrix"
+    }
+   }
   }
  ],
  "release": {

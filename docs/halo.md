@@ -55,6 +55,13 @@ v1.0; what they change is in that folder's README):
 - **Uncensored**: the same + the Uncensored adapter. Both are always loaded; the setting is the second adapter's scale (0 or 1),
   set on the running server (`/lora-adapters`), so switching needs no reload.
 
+**What runs it:** with an NVIDIA card, Impulse (the installer's own, on Linux and Windows). Without one (a Radeon or an
+Intel card, or the CPU alone), **Impulse portable**: the same llama.cpp commit and Impulse's hooks, with the CPU and
+Vulkan backends instead of CUDA. It is not in the installers, to keep the download small for everyone with an NVIDIA
+card; on a machine without one, the installer's setup (or Nebula at start) downloads it once (about 26 MB on Linux, 76 MB unpacked,
+pinned in `nebula/catalog/pieces.json`, sha256 checked) and Halo's panel says what it is fetching and why. A
+`llama-server` of your own on the PATH is the last resort.
+
 **Where it runs** (the owner's order): a spare GPU (a card with no engine), else spare VRAM on an engine's card (only what stays
 free after the engines have sized their caches, plus a margin), else the CPU, always warm with capped threads and `nice`, using
 no CPU when idle. On the CPU a second one-slot server is Halo's router lane, so a long handoff read never holds a routing call.

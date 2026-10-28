@@ -25,6 +25,7 @@ class PretendHub:
 
     def __init__(self, repos: dict):
         self.repos, self.slow, self.seen = repos, False, []          # repo -> {path: bytes}
+        self.breaks, self.busy = 0, 0                               # downloads to break off half way / to answer 503
         outer = self
 
         class H(BaseHTTPRequestHandler):
@@ -51,6 +52,9 @@ class PretendHub:
                 data = files.get(path)
                 if data is None:
                     return self._code(404)
+                if outer.busy:
+                    outer.busy -= 1
+                    return self._code(503)
                 start = 0
                 rng = self.headers.get("Range")
                 if rng:
@@ -61,6 +65,10 @@ class PretendHub:
                 self.send_header("Content-Length", str(len(data) - start))
                 self.end_headers()
                 for i in range(start, len(data), 65536):
+                    if outer.breaks and i >= start + (len(data) - start) // 2:   # the connection drops half way
+                        outer.breaks -= 1
+                        self.close_connection = True
+                        return
                     self.wfile.write(data[i:i + 65536])
                     if outer.slow:
                         time.sleep(0.05)
@@ -228,6 +236,17 @@ class HubTest(unittest.TestCase):
         self.assertFalse(os.path.exists(pulls.target("someone/tiny-GGUF", "tiny-Q4_K_M.gguf")))
         with self.assertRaises(hf.HfError):
             pulls.target("someone/tiny-GGUF", "../../escape.gguf")
+
+    def test_a_download_that_breaks_off_resumes_by_itself(self):
+        """A dropped connection half way, twice, and the Hub busy once: the pull picks up from the bytes it has."""
+        pulls = hf.Pulls(os.path.join(self.tmp, "models"))
+        data = self.repos["someone/tiny-GGUF"]["tiny-Q8_0.gguf"]
+        self.hub.breaks, self.hub.busy = 2, 1
+        pid = pulls.start("someone/tiny-GGUF", ["tiny-Q8_0.gguf"], sha256={"tiny-Q8_0.gguf": hashlib.sha256(data).hexdigest()})
+        self.assertTrue(wait_for(lambda: pulls.status(pid)["state"] in ("done", "failed"), timeout=60), pulls.status(pid))
+        self.assertEqual(pulls.status(pid)["state"], "done", pulls.status(pid))
+        self.assertEqual(Path(pulls.target("someone/tiny-GGUF", "tiny-Q8_0.gguf")).read_bytes(), data)
+        self.assertGreaterEqual(sum(1 for _p, rng, _a in self.hub.seen if rng), 2)          # resumed by Range
 
 
 class DeployYourOwnTest(unittest.TestCase):

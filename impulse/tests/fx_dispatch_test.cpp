@@ -45,6 +45,7 @@ int main() {
     gguf(T / "gguf" / "flash-next-dense.gguf", "qwen4exp");   // "dense" in its name, but no pack/ beside it
     gguf(T / "gguf" / "qwen36.gguf", "qwen35moe");
     gguf(T / "gguf" / "lfm.gguf", "lfm2moe");
+    gguf(T / "gguf" / "flint.gguf", "flint");
     gguf(T / "gguf" / "gemma4.gguf", "gemma4");
     // a folder whose pack/ is not a Strata pack (no index.txt): not fx
     const fs::path np = T / "not-a-pack";
@@ -64,6 +65,7 @@ int main() {
     expect("qwen4exp *dense*.gguf without pack/", fx::engine_for((T / "gguf" / "flash-next-dense.gguf").string()), "q35");
     expect("qwen35moe GGUF", fx::engine_for((T / "gguf" / "qwen36.gguf").string()), "q35");
     expect("lfm2moe GGUF", fx::engine_for((T / "gguf" / "lfm.gguf").string()), "q35");
+    expect("flint gguf", fx::engine_for((T / "gguf" / "flint.gguf").string()), "q35");
     expect("gemma4 GGUF", fx::engine_for((T / "gguf" / "gemma4.gguf").string()), "g4");
     expect("pack/ without index.txt (the folder)", fx::engine_for(np.string()), "g4");
     expect("pack/ without index.txt (its dense GGUF)", fx::engine_for((np / "x-dense.gguf").string()), "q35");

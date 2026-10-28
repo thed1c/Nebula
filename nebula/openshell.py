@@ -109,13 +109,31 @@ def why_not(exe: str | None = None, max_age_s: float = 60.0) -> str | None:
     return why
 
 
+def _rows(v, key: str) -> list:
+    """A `list -o json` answer as a list of rows, whatever its wrapping: a list as it is; an object that holds the list
+    (under its own key, "items" or "data", else its one list value); an object of name -> row; anything else none."""
+    if isinstance(v, list):
+        return [r for r in v if isinstance(r, dict)]
+    if not isinstance(v, dict):
+        return []
+    for k in (key, "items", "data"):
+        if isinstance(v.get(k), list):
+            return _rows(v[k], key)
+    lists = [x for x in v.values() if isinstance(x, list)]
+    if len(lists) == 1:
+        return _rows(lists[0], key)
+    if v and all(isinstance(x, dict) for x in v.values()):
+        return [{"name": n, **r} for n, r in v.items()]
+    return [v] if "name" in v else []
+
+
 def panel(exe: str | None = None) -> dict:
     if binary(exe) is None:
         return {"available": False, "why": "openshell is not installed on this machine"}
     out = {"available": True}
     for key, args in (("gateways", ["gateway", "list"]), ("sandboxes", ["sandbox", "list"]), ("providers", ["provider", "list"])):
         try:
-            out[key] = _json(args, exe)
+            out[key] = _rows(_json(args, exe), key)
         except OpenShellError as e:
             out[key], out[key + "_error"] = [], str(e)
     return out
@@ -365,23 +383,26 @@ def _lib_path(binary: str) -> str:
     return ":".join([os.path.realpath(x) for x in dirs if os.path.isdir(x)] + ([os.environ["LD_LIBRARY_PATH"]] if os.environ.get("LD_LIBRARY_PATH") else []))
 
 
-def engine_image_tag(binary: str) -> str:
-    """The image's tag: the program's name and the start of its sha256, so each build of it gets its own image."""
+def engine_image_tag(binary: str, extras=()) -> str:
+    """The image's tag: the program's name and the start of its sha256 (and its extras'), so each build of it gets its
+    own image."""
     real = engine_program(binary)
     h = hashlib.sha256()
-    with open(real, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 22), b""):
-            h.update(chunk)
+    for path in [real, *sorted(extras)]:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 22), b""):
+                h.update(chunk)
     name = re.sub(r"[^a-z0-9_.-]+", "-", os.path.basename(os.path.realpath(binary)).lower()).strip("-.") or "engine"
     return f"nebula-engine-{name}:{h.hexdigest()[:12]}"
 
 
-def engine_libs(binary: str) -> list[tuple[str, str]]:
+def engine_libs(binary: str, program: str | None = None, extra_path: str = "") -> list[tuple[str, str]]:
     """[(soname, the file here)]: the shared libraries the program loads that its image must carry (read with ldd:
-    CUDA's runtime and cuBLAS, OpenMP, the C++ library). A library ldd cannot find is refused, by name."""
+    CUDA's runtime and cuBLAS, OpenMP, the C++ library). A library ldd cannot find is refused, by name. `program`: another
+    file the image carries beside it (Impulse Flash-Next's), read with the same library path."""
     try:
-        p = subprocess.run(["ldd", engine_program(binary)], capture_output=True, text=True, timeout=60,
-                           env=dict(os.environ, LD_LIBRARY_PATH=_lib_path(binary)))
+        p = subprocess.run(["ldd", program or engine_program(binary)], capture_output=True, text=True, timeout=60,
+                           env=dict(os.environ, LD_LIBRARY_PATH=":".join(x for x in (extra_path, _lib_path(binary)) if x)))
     except (OSError, subprocess.TimeoutExpired):
         return []
     out = p.stdout + p.stderr
@@ -389,20 +410,28 @@ def engine_libs(binary: str) -> list[tuple[str, str]]:
         return []
     gone = re.findall(r"^\s*(\S+)\s+=>\s+not found", out, re.M)
     if gone:
-        raise OpenShellError(f"{os.path.basename(binary)} needs {gone[0]}, which this machine does not have")
+        raise OpenShellError(f"{os.path.basename(program or binary)} needs {gone[0]}, which this machine does not have")
     return [(m.group(1), m.group(2)) for m in re.finditer(r"^\s*(\S+)\s+=>\s+(/\S+)", out, re.M)
             if not _SKIP_LIB.match(m.group(1))]
 
 
-def engine_image(binary: str, docker: str, base: str = BASE_IMAGE, say=None) -> str:
+def engine_image(binary: str, docker: str, base: str = BASE_IMAGE, say=None, extras=()) -> str:
     """The engine's own image, built here once per build of its program: the base image with the program in
     /opt/engine and the libraries it loads in /opt/engine/lib (on the library path), its working folder /sandbox.
-    Nothing is downloaded but the base image, once."""
-    tag = engine_image_tag(binary)
+    `extras`: files that go beside the program (Impulse Flash-Next: impulse-fx and its engine library, which
+    impulse-server runs for a Flash-Next pack), with the libraries they load. Nothing is downloaded but the base image,
+    once."""
+    extras = sorted(os.path.realpath(x) for x in extras)
+    tag = engine_image_tag(binary, extras)
     if subprocess.run([docker, "image", "inspect", tag], capture_output=True).returncode == 0:
         return tag
     real, name = engine_program(binary), os.path.basename(os.path.realpath(binary))
-    libs = engine_libs(binary)
+    libs = dict(engine_libs(binary))
+    names = {os.path.basename(x) for x in extras}
+    for x in extras:
+        if _elf(x):
+            libs.update((k, v) for k, v in engine_libs(binary, x, os.path.dirname(x)) if k not in names)
+    libs = sorted(libs.items())
     if say:
         say(f"[nebula] building its image {tag} from {real} and {len(libs)} libraries (once for this build)")
     with tempfile.TemporaryDirectory(prefix="nebula-engine-image-") as ctx:
@@ -410,6 +439,9 @@ def engine_image(binary: str, docker: str, base: str = BASE_IMAGE, say=None) -> 
         os.makedirs(lib)
         shutil.copyfile(real, os.path.join(ctx, "engine", name))           # the program under its wrapper's name
         os.chmod(os.path.join(ctx, "engine", name), 0o755)
+        for x in extras:                                                  # beside it, where impulse-server looks
+            shutil.copyfile(x, os.path.join(ctx, "engine", os.path.basename(x)))
+            os.chmod(os.path.join(ctx, "engine", os.path.basename(x)), 0o755)
         for soname, path in libs:
             shutil.copyfile(os.path.realpath(path), os.path.join(lib, soname))
             os.chmod(os.path.join(lib, soname), 0o644)
@@ -513,13 +545,14 @@ class SandboxedEngine:
 
     def __init__(self, spec: dict, inner_cmd: list[str], models_dir: str, policy_dir: str, card_index,
                  exe: str | None = None, ready_timeout_s: float = 900.0, extra_dirs: list | None = None, keyed: bool = False,
-                 env: dict | None = None, build_from: str | None = None):
+                 env: dict | None = None, build_from: str | None = None, extras: list | None = None):
         self.spec, self.inner_cmd, self.models_dir, self.policy_dir = spec, inner_cmd, models_dir, policy_dir
         self.extra_dirs = list(extra_dirs or [])                 # [(a folder here, where the sandbox sees it)], read-only
         self.keyed = keyed                                        # its own key at /keys/key (the owner's user reads it)
         self.card_index, self.exe, self.ready_timeout_s = card_index, exe, ready_timeout_s   # an index or a list of them
         self.env = dict(env or {})                                # the engine's settings, passed into the sandbox
         self.build_from = build_from                              # its program here, when its image is built from it
+        self.extras = list(extras or [])                          # files its image carries beside the program
         self.name = sandbox_name(spec["name"])
         self.address: str | None = None
         self.state, self.error, self.proc = "idle", None, None
@@ -551,7 +584,7 @@ class SandboxedEngine:
             if self.build_from:
                 if not docker:
                     raise OpenShellError("its image is built here from its program, which needs Docker")
-                argv[argv.index("--from") + 1] = engine_image(self.build_from, docker, say=self._say)
+                argv[argv.index("--from") + 1] = engine_image(self.build_from, docker, say=self._say, extras=self.extras)
             if docker:
                 i = argv.index("--from") + 1
                 prog = next((w for w in self.inner_cmd if w.startswith("/")), None)       # after a taskset prefix
@@ -589,7 +622,7 @@ class SandboxedEngine:
             docker = os.environ.get("NEBULA_DOCKER") or shutil.which("docker")
             if not docker:
                 raise OpenShellError("its image is built here from its program, which needs Docker")
-            tag = engine_image(self.build_from, docker, say=self._say)
+            tag = engine_image(self.build_from, docker, say=self._say, extras=self.extras)
             if subprocess.run([podman, "image", "exists", tag], capture_output=True).returncode != 0:
                 self._say(f"[nebula] {tag} into Podman (once for this build)")
                 save = subprocess.Popen([docker, "save", tag], stdout=subprocess.PIPE)

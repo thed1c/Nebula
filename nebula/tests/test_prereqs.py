@@ -79,7 +79,7 @@ class PrereqsTest(unittest.TestCase):
              mock.patch.object(prereqs, "embeddings", return_value="Lookup's models: in place"), \
              mock.patch.object(prereqs, "report", return_value=["No Docker: ..."]), \
              mock.patch.object(prereqs, "say", side_effect=lambda *a: said.append(" ".join(a))):
-            failed = prereqs.run(cfg, self.tmp, {"cuda", "halo", "docling", "openshell", "docker"})
+            failed = prereqs.run(cfg, self.tmp, {"cuda", "halo", "halo-runtime", "docling", "openshell", "docker"})
         self.assertEqual(failed, 1)
         self.assertTrue(any("qdrant: not done now (no network)" in s and "python -m nebula.prereqs" in s for s in said), said)
         self.assertIn("Lookup's models: in place", said)

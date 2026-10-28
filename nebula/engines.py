@@ -50,7 +50,7 @@ KINDS = ("impulse", "llama.cpp", "command")        # the first two are packages 
 REMOVED_KINDS = {"strata": "impulse"}             # the owner, 2026-10-25: "Yes. Remove it." (Strata's package); its engines load as Impulse
 FIELDS = ("name", "kind", "binary", "model", "host", "port", "context", "slots", "cache_type", "flags", "card", "cpus", "env",
           "command", "cwd", "autostart", "ready_timeout_s", "stop_timeout_s", "note", "options", "source", "where", "guests", "image", "machine", "folder", "memory", "cpu_limit", "numa",
-          "long_context")
+          "long_context", "vulkan_card")
 # A Flash-Next engine's opt-in long context (impulse-fx --long-context: dynamic YaRN past the trained 262,144 tokens).  Off
 # when absent - the default for every engine; nebula/flashnext.py long_context_cost says what each size costs.
 LONG_CONTEXT = ("512k", "768k", "1m")
@@ -222,6 +222,40 @@ def ensure_key(path: str) -> str:
     return k
 
 
+def flashnext_piece(spec: dict, base_dir: str | None) -> list[str] | None:
+    """A Flash-Next pack on Impulse runs in impulse-fx, which impulse-server runs beside itself: that piece's files
+    (nebula/pieces.py, downloaded by the Flash-Next setup), or None for any other model. A pack without the piece is
+    refused, saying what to download."""
+    if spec.get("kind") != "impulse" or not spec.get("model"):
+        return None
+    from nebula import flashnext, pieces
+    model = str(spec["model"])
+    model = model if os.path.isabs(model) else os.path.join(base_dir or os.getcwd(), model)
+    root = model if os.path.isdir(model) else os.path.dirname(model)
+    if not flashnext.is_pack(root):
+        return None
+    exe = pieces.find("impulse-flashnext", base_dir)
+    if exe is None:
+        raise EngineSpecError(f"engine {spec['name']}: a Flash-Next pack runs on Impulse Flash-Next, which is not here yet "
+                              f"(Run a model › a Flash-Next pack: it {pieces.say('impulse-flashnext')})")
+    d = os.path.dirname(exe)
+    return sorted(os.path.join(d, f) for f in os.listdir(d) if os.path.isfile(os.path.join(d, f)) and not f.startswith("LICENSE"))
+
+
+def _pack_of(model: str) -> dict | None:
+    """A Flash-Next pack's files (flashnext.pack_files) when `model` is one (its folder or its dense GGUF), else None."""
+    from nebula import flashnext
+    return flashnext.pack_files(model if os.path.isdir(model) else os.path.dirname(model))
+
+
+def _piece_profile(base_dir: str | None) -> str | None:
+    """The expert profile the Impulse Flash-Next piece carries beside impulse-fx (nebula/pieces.py), if it is here."""
+    from nebula import flashnext, pieces
+    exe = pieces.find("impulse-flashnext", base_dir)
+    p = exe and os.path.join(os.path.dirname(exe), flashnext.PIECE_PROFILE)
+    return p if p and os.path.isfile(p) else None
+
+
 def command_of(spec: dict, base_dir: str | None = None, key_file: str | None = None) -> list[str]:
     """The argv a deployment runs: its settings, then the package's hardening (its chat page off; its /slots page off
     unless guests use it; no prompt cache across slots when they do; the key only Nebula holds), then the extra flags."""
@@ -240,6 +274,21 @@ def command_of(spec: dict, base_dir: str | None = None, key_file: str | None = N
     b = spec.get("binary") or packages.locate(spec["kind"], base_dir) or packages.PACKAGES[spec["kind"]]["binary"]
     binary = list(b) if isinstance(b, list) else [str(b)]
     argv = binary + ["-m", model, "--host", spec["host"], "--port", str(spec["port"])]
+    fx_files = spec.get("fx_files") or (_pack_of(model) if spec["kind"] == "impulse" else None)
+    if spec["kind"] == "impulse" and fx_files:
+        # A Flash-Next pack: impulse-server hands it to impulse-fx, which takes its own words (no -c/-np/--no-webui;
+        # the context comes from the pack, and impulse-fx has no chat page) and a run config naming all the pack's files
+        from nebula import flashnext
+        files = fx_files
+        gpus = len([c for c in str(spec.get("card") or "").split(",") if c.strip()]) or 1
+        profile = files.get("profile") or _piece_profile(base_dir)
+        cfg = flashnext.local_config({k: v for k, v in files.items() if k != "profile"}, name=spec["name"].lower(),
+                                     port=int(spec["port"]), gpus=gpus, parallel=slots, profile=profile)
+        argv += ["--fx-config-json", json.dumps(cfg, separators=(",", ":"))]
+        if spec.get("long_context") in LONG_CONTEXT:
+            argv += ["--long-context", spec["long_context"]]
+        argv += [str(f) for f in spec.get("flags") or []]
+        return (["taskset", "-c", spec["cpus"]] if spec.get("cpus") else []) + argv
     if spec.get("context"):
         argv += ["-c", str(int(spec["context"]) * slots)]
     argv += ["-np", str(slots)]
@@ -261,6 +310,12 @@ def command_of(spec: dict, base_dir: str | None = None, key_file: str | None = N
             argv += ["--api-key-file", key_file]
         else:
             argv += [pk["api_key"], "@" + key_file]          # shown as the file; the key itself is filled in at start
+    if spec.get("vulkan_card"):                      # Impulse portable on one card through Vulkan, by its name (its number
+        from nebula import catalog as C              # changes when another card comes or goes): found now
+        vk = next((c for c in C.vulkan_cards(base_dir) if c["name"] == spec["vulkan_card"]), None)
+        if vk is None:
+            raise EngineSpecError(f"engine {spec['name']}: the card {spec['vulkan_card']} does not answer through Vulkan now")
+        argv += ["--device", vk["id"]]
     argv += [str(f) for f in spec.get("flags") or []]
     return (["taskset", "-c", spec["cpus"]] if spec.get("cpus") else []) + argv
 
@@ -389,6 +444,149 @@ def _kv_mb_per_layer(spec: dict, m: dict, layers: int) -> int | None:
     return round(total / 2**20)
 
 
+def gguf_tensor_bytes(path: str) -> dict:
+    """A GGUF's tensor bytes split as Impulse places them: {"experts": the routed experts' (`*_exps*`, which stay in RAM
+    with a cache of them on the card), "other": everything else (on the card), "expert_layers": the layers with experts}.
+    Each tensor's size is the distance to the next one's offset (no table of quant formats needed)."""
+    with open(path, "rb") as f:
+        if f.read(4) != b"GGUF":
+            raise ValueError("not a GGUF file")
+        version, n_tensors, n_kv = struct.unpack("<IQQ", f.read(20))
+        if version < 2:
+            raise ValueError("GGUF version 1 is not read")
+        rstr = lambda: f.read(struct.unpack("<Q", f.read(8))[0]).decode("utf-8", "replace")
+        align = 32
+
+        def skip(t):
+            if t == 8:
+                rstr()
+            elif t == 9:
+                et, n = struct.unpack("<IQ", f.read(12))
+                if et in _GGUF_TYPES:
+                    f.seek(n * struct.calcsize("<" + _GGUF_TYPES[et]), 1)
+                else:
+                    for _ in range(n):
+                        skip(et)
+            else:
+                f.seek(struct.calcsize("<" + _GGUF_TYPES[t]), 1)
+
+        for _ in range(n_kv):
+            key = rstr()
+            (t,) = struct.unpack("<I", f.read(4))
+            if key == "general.alignment" and t == 4:
+                (align,) = struct.unpack("<I", f.read(4))
+            else:
+                skip(t)
+        tensors = []
+        for _ in range(n_tensors):
+            name = rstr()
+            (nd,) = struct.unpack("<I", f.read(4))
+            f.seek(8 * nd + 4, 1)                                # dims, type
+            (off,) = struct.unpack("<Q", f.read(8))
+            tensors.append((off, name))
+        data = (f.tell() + align - 1) // align * align
+    end = os.path.getsize(path) - data
+    tensors.sort()
+    out = {"experts": 0, "other": 0, "expert_layers": set()}
+    for i, (off, name) in enumerate(tensors):
+        size = (tensors[i + 1][0] if i + 1 < len(tensors) else end) - off
+        if "_exps" in name:
+            out["experts"] += size
+            out["expert_layers"].add(name.split(".")[1] if name.startswith("blk.") else name)
+        else:
+            out["other"] += size
+    out["expert_layers"] = len(out["expert_layers"])
+    return out
+
+
+RAM_OVERHEAD_MB = 3072                            # the engine's own RAM beside the experts (pool buffers, the scheduler's)
+MIN_SLOTS = 8                                     # Impulse's smallest expert cache per layer (kMinSlots)
+
+
+def ram_free_mb() -> int | None:
+    """RAM free for a new engine (MemAvailable), in MB; NEBULA_FAKE_RAM_FREE_MB for tests."""
+    if os.environ.get("NEBULA_FAKE_RAM_FREE_MB"):
+        return int(os.environ["NEBULA_FAKE_RAM_FREE_MB"])
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as f:
+            for ln in f:
+                if ln.startswith("MemAvailable:"):
+                    return int(ln.split()[1]) // 1024
+    except OSError:
+        pass
+    return None
+
+
+def in_wsl() -> bool:
+    """Linux under Windows' WSL2 (its RAM is a share of the PC's: half by default); NEBULA_FAKE_WSL=1 for tests."""
+    if os.environ.get("NEBULA_FAKE_WSL") is not None:
+        return os.environ["NEBULA_FAKE_WSL"] == "1"
+    try:
+        with open("/proc/version", encoding="utf-8") as f:
+            return "microsoft" in f.read().lower()
+    except OSError:
+        return False
+
+
+def _fit_experts_in_ram(spec: dict, model: str, m: dict, out: dict, have: list[dict]) -> dict:
+    """Flint on Impulse: on the card the weights that are not routed experts, the KV cache for the context (every layer
+    keeps every cell, the sliding layers too, until the compact window cache) and the compute buffers; in RAM every
+    routed expert, with a cache of them in the card's memory that is left (at least 8 per layer). With `n_cpu_moe` 0 on
+    several cards (all on the cards) the experts go on the cards instead and RAM needs none of them. RAM also holds twice the
+    KV cache for the prompt cache (conversations parked in RAM)."""
+    try:
+        tb = gguf_tensor_bytes(model)
+    except (OSError, ValueError, struct.error) as e:
+        out["why"] = f"the model file cannot be read: {e}"
+        return out
+    o = spec.get("options") or {}
+    mb = lambda b: round(b / 2**20)
+    layers, kv_heads = m.get("block_count") or 0, m.get("attention.head_count_kv") or m.get("attention.head_count") or 0
+    head = m.get("attention.key_length") or 128
+    vhead = m.get("attention.value_length") or head
+    kt = o.get("cache_type_k") or spec.get("cache_type") or "q4_0"    # Impulse's own default for this engine
+    vt = o.get("cache_type_v") or spec.get("cache_type") or "q4_0"
+    tokens = int(spec.get("context") or 4096) * int(spec.get("slots") or 1)
+    out["kv_mb"] = mb(layers * kv_heads * (head * CACHE_BYTES.get(kt, 2.0) + vhead * CACHE_BYTES.get(vt, 2.0)) * tokens)
+    all_on_cards = int(o.get("n_cpu_moe", -1)) == 0
+    per_slot = tb["experts"] / max(1, (m.get("expert_count") or 1) * max(1, tb["expert_layers"]))   # one expert, one layer
+    min_cache = 0 if all_on_cards else MIN_SLOTS * per_slot * tb["expert_layers"]
+    out["weights_mb"] = mb(tb["other"] + (tb["experts"] if all_on_cards else 0))
+    out["need_mb"] = out["weights_mb"] + out["kv_mb"] + OVERHEAD_MB + mb(min_cache)
+    # the prompt cache keeps conversations' KV in RAM too (measured: the locked RAM grows ~5 GB from 8K to 64K)
+    out["ram_need_mb"] = (0 if all_on_cards else mb(tb["experts"]) + RAM_OVERHEAD_MB) + 2 * out["kv_mb"]
+    out["ram_free_mb"] = ram_free_mb()
+    if out["ram_need_mb"] and out["ram_free_mb"] is not None and out["ram_free_mb"] < out["ram_need_mb"]:
+        out["fits"] = False
+        out["why"] = (f"needs about {round(out['ram_need_mb'] / 1024)} GB of free RAM for its experts, and this computer has "
+                      f"{round(out['ram_free_mb'] / 1024)} GB free")
+        if in_wsl():   # WSL2 gives Linux half the PC's RAM unless told otherwise; the page offers to raise it (wslmem.py)
+            out["wsl_fix"] = True
+            out["why"] += (". Nebula runs in WSL, which gets half of the PC's RAM by default: raise it with a memory= line under "
+                           "[wsl2] in %UserProfile%\\.wslconfig (for example memory=48GB), run wsl --shutdown, and start Nebula again")
+        return out
+    cs = cards_of(spec, have)
+    gone = next((c for c in cs if c.get("missing")), None)
+    if gone:
+        out["card"], out["fits"], out["why"] = gone["missing"], False, f"this machine has no card {gone['missing']}"
+        return out
+    cs = cs or sorted(have, key=lambda c: int(c.get("memory_mb", 0)) - int(c.get("used_mb", 0)), reverse=True)[:1]
+    if not cs:
+        out["why"] = "no card here"
+        return out
+    out["card"] = ",".join(str(c.get("uuid")) for c in cs)
+    out["free_mb"] = sum(int(c.get("memory_mb", 0)) - int(c.get("used_mb", 0)) for c in cs)
+    out["fits"] = out["need_mb"] <= out["free_mb"]
+    if not all_on_cards:   # what is left on the card for the expert cache, as a share of all the experts
+        left = max(0, out["free_mb"] - out["need_mb"] + mb(min_cache))
+        out["expert_cache_mb"] = left
+        out["expert_cache_share"] = round(min(1.0, left / max(1, mb(tb["experts"]))), 2)
+    where = "the card has" if len(cs) == 1 else f"its {len(cs)} cards have"
+    out["why"] = None if out["fits"] else (f"needs about {out['need_mb']} MB on the card for this context "
+                                           f"({out['kv_mb']} MB of it the KV cache), {where} {out['free_mb']} MB free")
+    return out
+
+
 def fit(spec: dict, base_dir: str | None = None, have: list[dict] | None = None) -> dict:
     """{"weights_mb", "kv_mb", "need_mb", "card", "free_mb", "fits", "why"}: what the deployment needs against its card."""
     out: dict = {"weights_mb": None, "kv_mb": None, "need_mb": None, "card": None, "free_mb": None, "fits": None, "why": None}
@@ -404,6 +602,8 @@ def fit(spec: dict, base_dir: str | None = None, have: list[dict] | None = None)
     except (OSError, ValueError, struct.error) as e:
         out["why"] = f"the model file cannot be read: {e}"
         return out
+    if spec.get("kind") == "impulse" and m.get("general.architecture") == "flint":
+        return _fit_experts_in_ram(spec, model, m, out, cards() if have is None else have)
     layers = m.get("block_count")
     if layers and (isinstance(m.get("attention.head_count_kv"), list) or isinstance(m.get("attention.sliding_window_pattern"), list)):
         out["kv_mb"] = _kv_mb_per_layer(spec, m, layers)        # Gemma 4 and kin: per-layer heads, sliding-window layers
@@ -628,6 +828,9 @@ class Engines:
             if cs:
                 env.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
                 env["CUDA_VISIBLE_DEVICES"] = ",".join(str(c.get("uuid") or c.get("index")) for c in cs)
+            fx = flashnext_piece(s, self.cfg.base_dir)          # a Flash-Next pack run here: impulse-fx from its piece
+            if fx:
+                env.setdefault("IMPULSE_FX_SERVER", next(f for f in fx if os.path.basename(f).startswith("impulse-fx")))
             log = str(Path(self.cfg.path).with_name(f"engine-{name}.log")) if self.cfg.path else None
             where, why = sandbox_plan(s, conf_dir=self.conf_dir())
             if where == "openshell":
@@ -737,7 +940,7 @@ class Engines:
         ib = pk.get("image_binary")
         if ib and not s.get("image") and not s.get("binary"):   # the package's own image: its binary where the image has it
             inner["binary"] = ib
-        build_from, image = None, None
+        build_from, image, extras = None, None, []
         if wsl:
             from nebula import wslbox
             image = s.get("image") or (wslbox.image_for(self.conf_dir(), s["kind"]) if pk.get("image_from_binary") else pk.get("image"))
@@ -752,6 +955,7 @@ class Engines:
                                       f"file on this machine ({b or 'none found'})")
             build_from = os.path.realpath(str(b))
             inner["binary"] = openshell.ENGINE_DIR + "/" + os.path.basename(build_from)
+            extras = flashnext_piece(s, self.cfg.base_dir) or []     # a Flash-Next pack: impulse-fx beside it in the image
         # its own key (design decision, 2026-10-20): the same key Nebula calls it with, in a folder of its own that the
         # sandbox sees read-only at /keys; the gateway passes Nebula's Authorization through to it
         kp, key_file = key_path(s, self.cfg), None
@@ -777,7 +981,8 @@ class Engines:
         return openshell.SandboxedEngine(s, cmd, md, os.path.join(self.cfg.base_dir or ".", "nebula-sandbox"),
                                          [c.get("index") for c in cs] or None,
                                          ready_timeout_s=float(s.get("ready_timeout_s") or 900), extra_dirs=extra,
-                                         keyed=key_file is not None, env=s.get("env") or None, build_from=build_from)
+                                         keyed=key_file is not None, env=s.get("env") or None, build_from=build_from,
+                                         extras=extras)
 
     def _start_on_machine(self, s: dict, wait: bool) -> dict:
         """An engine on a model machine: its card there, a sandbox there, its model through your network."""
@@ -835,6 +1040,11 @@ class Engines:
             def there(x: str) -> str:
                 return "/models" + x[len(root):] if x.startswith(root + "/") else x
             inner = dict(s, host="127.0.0.1", model=there(s["model"]))
+            if s["kind"] == "impulse" and _pack_of(s["model"]):      # a Flash-Next pack: its files as the sandbox sees them
+                inner["fx_files"] = {k: there(v) for k, v in _pack_of(s["model"]).items()}
+                if _piece_profile(self.cfg.base_dir):                # the piece's profile: beside impulse-server in the image
+                    from nebula import flashnext
+                    inner["fx_files"]["profile"] = openshell.ENGINE_DIR + "/" + flashnext.PIECE_PROFILE
             if opts:
                 inner["options"] = {k: (there(v) if k in files_keys and isinstance(v, str) else v) for k, v in opts.items()}
             if s.get("flags"):

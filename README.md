@@ -66,8 +66,15 @@ That's the whole list. If none of these are on, Nebula works with no internet at
   or **Windows 11**, 64-bit Intel or AMD.
 - An **NVIDIA graphics card** with its driver installed. We test on the RTX 30, 40 and 50 series. Impulse is also
   built for the RTX 20 series and data center cards like the A100 and H100, but we test those less. 8 GB of video
-  memory runs the light model, 12 GB the all-rounder and 16 GB the biggest. Without an NVIDIA card, Halo and Lookup
-  still run.
+  memory runs the light model, 12 GB the all-rounder and 16 GB the biggest. **Flint**, the coding model, runs on 8 GB
+  and up when the computer has RAM free for its experts: about 27 GB for Q4, 38 GB for Q6 at its 32K context (two cards that hold all of Q4
+  write about twice as fast).
+- **No NVIDIA card? An AMD Radeon or another card works too, more slowly.** Nebula then runs models on Impulse
+  portable (a small download, about 25 MB, the first time it needs it) through Vulkan: as much of the model as fits on
+  the card, the rest in RAM, and on the CPU when no card answers through Vulkan. Run a model says beforehand how much
+  goes on the card. These models run directly on your computer, not in a sandbox (a sandbox does not reach the
+  graphics card). Qwen3.8 Flash-Next needs an NVIDIA card. We have tested a Radeon RX 5500M (4 GB); other cards are
+  untested.
 - **An internet connection** while you install and while you download your first model.
 - About 5 GB of disk space for Nebula itself, and more for models. They are big: a typical one is 5 to 20 GB.
 - On Linux, `curl` or `wget` (most Linux desktops have one; if not: `sudo apt install curl`).
@@ -75,8 +82,7 @@ That's the whole list. If none of these are on, Nebula works with no internet at
   The installer tells you the command if it is missing; without it, models run outside a sandbox and Nebula says so.
 - **For the sandbox on Windows:** virtualization switched on in your computer's BIOS. Setup does the rest.
 
-**Not yet:** AMD and Intel graphics cards for models (AMD is planned for the next release; Halo alone can already use
-a Radeon), and Macs.
+**Not yet:** Macs.
 
 ## Install
 

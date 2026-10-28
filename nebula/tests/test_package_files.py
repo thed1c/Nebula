@@ -47,3 +47,29 @@ class SandboxPayloadTest(unittest.TestCase):
         pins = json.loads((pay / "wsl.json").read_text())
         self.assertEqual(len(pins["rootfs"]["sha256"]), 64)
         self.assertEqual(len(pins["nvidia"]["key_fingerprint"]), 40)
+
+
+class PiecesOutOfTheInstallerTest(unittest.TestCase):
+    """The owner's 2026-10-27 word, "keep the downloads as small as possible": Impulse Flash-Next leaves the installers
+    as a piece of its own (the name pieces.json asks for), and no installer carries llama-server any more."""
+    def test_flashnext_is_written_beside_the_installer_with_the_name_pieces_json_asks_for(self):
+        import json
+        import tarfile
+        import tempfile
+        imp, out = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
+        for n in ("impulse-server.bin", "impulse-fx", "libimpulse_fx.so", "libstrata_kq.so"):
+            (imp / n).write_text(n)
+        dest = P.make_flashnext(imp, "linux", out)
+        m = json.loads((ROOT / "nebula" / "catalog" / "pieces.json").read_text())
+        want = (m["url"].rsplit("/", 1)[1].replace("{piece}", "impulse-flashnext").replace("{version}", P.version())
+                .replace("{platform}", "linux-x86_64").replace("{ext}", m["pieces"]["impulse-flashnext"]["files"]["linux-x86_64"]["ext"]))
+        self.assertEqual(dest.name, want)
+        with tarfile.open(dest) as t:
+            self.assertEqual(sorted(t.getnames()), ["expert-profile.bin", "impulse-fx", "libimpulse_fx.so", "libstrata_kq.so"])   # the profile: a layer split needs it
+        self.assertTrue((out / (dest.name + ".sha256")).is_file())
+        self.assertIsNone(P.make_flashnext(Path(tempfile.mkdtemp()), "linux", out))          # a build without Flash-Next
+
+    def test_no_installer_carries_llama_server(self):
+        src = (ROOT / "greenfield" / "package.py").read_text()
+        self.assertNotIn("--halo-server", src)
+        self.assertNotIn("llama-server.bin", src)

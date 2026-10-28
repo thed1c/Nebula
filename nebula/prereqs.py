@@ -7,7 +7,9 @@ downloads"); it can be run again any time, and each step is skipped when its pie
 
 Pinned and checked (sha256), each step said in plain words:
   cuda        with an NVIDIA driver: CUDA's runtime and cuBLAS from NVIDIA's own pip packages, the versions Impulse was
-              built with (Impulse and Halo's llama-server read them from this Python's site-packages)
+              built with (Impulse reads them from this Python's site-packages)
+  halo-runtime  without an NVIDIA card: Impulse portable (CPU + Vulkan), Halo's runtime there; not in the installer (to
+              keep it small), so downloaded here and said
   docling     Lookup's document reading (PDF, Office, images): docling's layout, table and OCR models, fetched by reading
               one small document as Lookup would
   qdrant      Lookup's own vector store (nebula/rag/vectors.py's pinned release); the one Nebula installed is replaced
@@ -233,6 +235,21 @@ def docling() -> str:
     return "Document reading: docling's models in place (PDF, Word, PowerPoint, Excel, images)"
 
 
+# --- Halo's runtime without an NVIDIA card
+def halo_runtime(cfg) -> str:
+    """Impulse portable (CPU + Vulkan) when this machine has no NVIDIA card: Halo's runtime there. Not in the installer, to
+    keep it small (the owner's word, 2026-10-27): downloaded here, pinned and sha256 checked, and said."""
+    from nebula import halo_engine as HE, pieces
+    if HE.has_nvidia():
+        return "Halo's runtime: Impulse (this machine has an NVIDIA card)"
+    if HE.find_portable(cfg.base_dir):
+        return "Halo's runtime: Impulse portable, already here"
+    if pieces.pin("impulse-portable") is None:
+        return "Halo's runtime: " + pieces.say("impulse-portable") + "; Halo thinks with the Assistant's model"
+    pieces.fetch("impulse-portable", cfg.base_dir)
+    return "Halo's runtime: " + pieces.say("impulse-portable").replace("downloads", "downloaded", 1)
+
+
 # --- OpenShell
 def openshell_system() -> str | None:
     """An OpenShell already installed on this machine (a system package), which is used as it is."""
@@ -358,7 +375,7 @@ def report() -> list[str]:
     return out
 
 
-STEPS = ("cuda", "halo", "qdrant", "embeddings", "docling", "openshell", "docker")
+STEPS = ("cuda", "halo", "halo-runtime", "qdrant", "embeddings", "docling", "openshell", "docker")
 
 
 def run(cfg, dest: str, skip: set[str]) -> int:
@@ -367,7 +384,7 @@ def run(cfg, dest: str, skip: set[str]) -> int:
         if step in skip:
             continue
         try:
-            msg = {"cuda": lambda: cuda(dest), "halo": lambda: halo_model(cfg), "docling": docling, "qdrant": lambda: qdrant(cfg), "embeddings": lambda: embeddings(cfg), "openshell": lambda: openshell(dest),
+            msg = {"cuda": lambda: cuda(dest), "halo": lambda: halo_model(cfg), "halo-runtime": lambda: halo_runtime(cfg), "docling": docling, "qdrant": lambda: qdrant(cfg), "embeddings": lambda: embeddings(cfg), "openshell": lambda: openshell(dest),
                    "docker": docker_images}[step]()
             say(msg)
         except Exception as e:  # noqa: BLE001 - each piece on its own: the rest still installs

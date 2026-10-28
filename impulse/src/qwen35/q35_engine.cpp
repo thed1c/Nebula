@@ -97,6 +97,20 @@ static ggml_tensor * mm_id_s(ggml_context * ctx, ggml_tensor * res, ggml_tensor 
     t = ggml_get_rows(ctx, t, sel);
     return ggml_mul(ctx, res, t);
 }
+// llama.cpp#30861 + #30928 (Flint): the down projection's input [n_ff, k, n] over an exact power of two per [expert, token]
+// from its max |x| (threshold 1024: the F16 sums of the Q8_1 activation blocks stay finite); the result times it after
+static std::pair<ggml_tensor *, ggml_tensor *> down_amax(ggml_context * ctx, ggml_tensor * cur) {
+    constexpr float k_log2_e = 1.4426950408889634f, k_ln_2 = 0.6931471805599453f;
+    ggml_tensor * amax = ggml_pool_1d(ctx, ggml_abs(ctx, cur), GGML_OP_POOL_MAX, cur->ne[0], cur->ne[0], 0);
+    ggml_tensor * e = ggml_scale(ctx, amax, 1.0f / 1024.0f);
+    e = ggml_log(ctx, e);
+    e = ggml_scale(ctx, e, k_log2_e);
+    e = ggml_ceil(ctx, e);
+    e = ggml_clamp(ctx, e, 0.0f, 127.0f);
+    e = ggml_scale(ctx, e, k_ln_2);
+    e = ggml_exp(ctx, e);
+    return { ggml_div(ctx, cur, e), e };
+}
 // llama_kv_cache::build_input_k_rot: the largest power of two (from 64) dividing the head size; V always 64
 static int k_rot_size(int head) { int r = 64; do { r *= 2; } while (head % r == 0); return r / 2; }
 static std::mutex g_pool_mu;   // the ExpertPool is not reentrant
@@ -454,11 +468,14 @@ std::string Engine::load(const Options & o) {
     {
         const int64_t id = gguf_find_key(gguf_, "general.architecture");
         arch = id < 0 ? "" : gguf_get_val_str(gguf_, id);
-        if (arch != "qwen35moe" && arch != "qwen35" && arch != "lfm2moe" && arch != "lfm2" && arch != "qwen4exp") return "unsupported hybrid GGUF (" + arch + ")";
+        if (arch != "qwen35moe" && arch != "qwen35" && arch != "lfm2moe" && arch != "lfm2" && arch != "qwen4exp" && arch != "flint") return "unsupported hybrid GGUF (" + arch + ")";
     }
     H.lfm2 = arch == "lfm2moe" || arch == "lfm2";   // lfm2: the dense LFM2 / LFM2.5 (1.2B, 2.6B: every layer a dense FFN; Halo's model)
     H.dense = arch == "qwen35" || arch == "lfm2";
     H.q4x = arch == "qwen4exp";
+    H.flint = arch == "flint";
+    if (H.flint && o.split_tensor) return "Flint: --split-mode layer only so far";
+    if (H.flint && !o.mtp.empty()) return "Flint has no MTP head";
     if (H.q4x && o.split_tensor) return "Qwen3.8 Flash-Next (qwen4exp): --split-mode layer only (several cards: each its layers and their expert cache)";
     if (!H.lfm2 && (!o.lora.empty() || !o.loras.empty())) return "LoRA adapters: LFM2 models only";
     if (H.lfm2 && !H.dense && !o.loras.empty()) return "lfm2moe: one adapter (--lora)";
@@ -538,6 +555,21 @@ std::string Engine::load(const Options & o) {
         if (o_.kv_initial > 0) fprintf(stderr, "impulse: qwen4exp: the whole context's K/V and indexer keys at load (no KV pager yet)\n");
         o_.kv_initial = 0;
     }
+    if (H.flint) {   // llama_model_flint::load_arch_hparams
+        H.n_dense = (int) kv_int(gguf_, A + "leading_dense_block_count");
+        H.n_ff = (int) kv_int(gguf_, A + "feed_forward_length");
+        H.n_swa = (int) kv_int(gguf_, A + "attention.sliding_window");
+        const auto swa = kv_arr(gguf_, A + "attention.sliding_window_pattern"), rope = kv_arr(gguf_, A + "attention.rope_pattern");
+        if ((int) swa.size() != H.n_layer || (int) rope.size() != H.n_layer) return "Flint needs a sliding-window and a RoPE pattern per layer";
+        H.is_swa.assign(H.n_layer, false); H.has_rope.assign(H.n_layer, false);
+        for (int il = 0; il < H.n_layer; ++il) { H.is_swa[il] = swa[il] != 0; H.has_rope[il] = rope[il] != 0; H.is_recr[il] = false; }
+        auto kv_bool = [&](const std::string & k) { const int64_t id = gguf_find_key(gguf_, k.c_str()); return id >= 0 && gguf_get_kv_type(gguf_, id) == GGUF_TYPE_BOOL && gguf_get_val_bool(gguf_, id); };
+        if (kv_int(gguf_, A + "expert_gating_func") != 2) return "Flint requires sigmoid expert gating";
+        if (!kv_bool(A + "expert_weights_norm")) return "Flint: the graph here renormalizes the routing weights (expert_weights_norm)";
+        if (kv_f32(gguf_, A + "expert_weights_scale", 1.0f) != 1.0f) return "Flint: expert_weights_scale other than 1 is not supported";
+        if (H.n_dense < 0 || H.n_dense >= H.n_layer || H.n_ff <= 0 || H.n_swa <= 0 || H.n_ff_shexp <= 0) return "unexpected Flint hparams";
+        if (H.n_rot != H.head_dim) return "Flint: RoPE over the whole head only";
+    }
     if (H.lfm2) {
         const auto heads = kv_arr(gguf_, A + "attention.head_count_kv");
         if ((int) heads.size() != H.n_layer) return "LFM2 needs one KV head count per layer";
@@ -586,7 +618,7 @@ std::string Engine::load(const Options & o) {
         ggml_free(meta_); meta_ = nullptr;
         return load(d);
     }
-    if (H.n_layer <= 0 || H.n_embd <= 0 || H.head_dim <= 0 || (!H.lfm2 && H.ssm_d_state <= 0) || H.n_head_kv <= 0 ||
+    if (H.n_layer <= 0 || H.n_embd <= 0 || H.head_dim <= 0 || (!H.lfm2 && !H.flint && H.ssm_d_state <= 0) || H.n_head_kv <= 0 ||
         (!H.dense && (H.n_expert <= 0 || H.n_expert_used <= 0 || H.n_expert_used > 64 || H.n_expert_used > H.n_expert)))
         return "unexpected hybrid model hparams";
 
@@ -822,7 +854,7 @@ std::string Engine::load(const Options & o) {
             }
         } else {
         l.attn_norm      = make(b("attn_norm.weight"), false);
-        l.attn_post_norm = make(b(H.lfm2 ? "ffn_norm.weight" : "post_attention_norm.weight"), false);
+        l.attn_post_norm = make(b(H.lfm2 || H.flint ? "ffn_norm.weight" : "post_attention_norm.weight"), false);
         }
         if (!H.is_recr[il]) {
             l.wq     = make(b("attn_q.weight"), false);
@@ -832,6 +864,10 @@ std::string Engine::load(const Options & o) {
             l.q_norm = make(b("attn_q_norm.weight"), false);
             l.k_norm = make(b("attn_k_norm.weight"), false);
             if (!l.wq || !l.wk || !l.wv || !l.wo || !l.q_norm || !l.k_norm) return "layer " + std::to_string(il) + ": missing attention tensors";
+            if (H.flint) {
+                l.attn_sinks = make(b("attn_sinks.weight"), false);
+                if (!l.attn_sinks || l.attn_sinks->type != GGML_TYPE_F32 || l.attn_sinks->ne[0] != H.n_head) return "layer " + std::to_string(il) + ": missing attention sinks";
+            }
         } else if (H.lfm2) {
             l.conv_in = make(b("shortconv.in_proj.weight"), false);
             l.conv_out = make(b("shortconv.out_proj.weight"), false);
@@ -891,6 +927,7 @@ std::string Engine::load(const Options & o) {
             l.expert_bias = make(b("exp_probs_b.bias"), false);
             if (!l.expert_bias) return "missing LFM2 expert selection bias";
         }
+        if (H.flint) l.expert_bias = make(b("exp_probs_b.bias"), false);   // optional (TENSOR_NOT_REQUIRED); the release has none
         l.gate_inp       = make(b("ffn_gate_inp.weight"), false);
         l.gate_exps      = make(b("ffn_gate_exps.weight"), exps_cpu);
         l.up_exps        = make(b("ffn_up_exps.weight"), exps_cpu);
@@ -899,7 +936,7 @@ std::string Engine::load(const Options & o) {
         l.gate_shexp     = make(b("ffn_gate_shexp.weight"), false);
         l.up_shexp       = make(b("ffn_up_shexp.weight"), false);
         l.down_shexp     = make(b("ffn_down_shexp.weight"), false);
-        if ((!H.q4x && (!l.attn_norm || !l.attn_post_norm)) || !l.gate_inp || !l.gate_exps || !l.up_exps || !l.down_exps || (!H.lfm2 && (!l.up_shexp || !l.gate_shexp || !l.down_shexp || !l.gate_inp_shexp)))
+        if ((!H.q4x && (!l.attn_norm || !l.attn_post_norm)) || !l.gate_inp || !l.gate_exps || !l.up_exps || !l.down_exps || (!H.lfm2 && (!l.up_shexp || !l.gate_shexp || !l.down_shexp || (!H.flint && !l.gate_inp_shexp))))
             return "layer " + std::to_string(il) + ": missing tensors";
         if (H.lfm2) lfm_ffn_scales({ "ffn_gate_exps.scale", "ffn_up_exps.scale", "ffn_down_exps.scale" });
         else {   // build_moe_ffn's per-expert scales, beside the experts (RAM for a --n-cpu-moe layer), and the shared expert's
@@ -1192,7 +1229,7 @@ std::string Engine::load(const Options & o) {
     for (int il = 0; il < H.n_layer; ++il) if (H.is_recr[il]) ckpt_bytes_ += r_l_[il]->nb[1] + (s_l_[il] ? s_l_[il]->nb[1] : 0) + (p_l_[il] ? p_l_[il]->nb[1] : 0);
     sync_all();   // the checkpoints on card 0 (the reserve graphs may leave another card current)
     if (host_states()) for (auto & h : ckpt_host_) h.resize(ckpt_bytes_);
-    else for (void *& c : ckpt_)
+    else if (ckpt_bytes_) for (void *& c : ckpt_)
         if (cudaMalloc(&c, ckpt_bytes_) != cudaSuccess) { cudaGetLastError(); c = nullptr; return "cannot allocate the recurrent checkpoints"; }
     if (o.cache_slots < 0 && !cache_.empty()) {   // auto slots, per card: what its free VRAM holds after everything above, less the reserve
         const size_t reserve = (size_t) o.vram_reserve_mb << 20;
@@ -1348,6 +1385,7 @@ int Engine::grow_to(int S, size_t headroom, int card) {
 int Engine::resume_point(int pos, int seq) const {
     const int n_past_ = n_past_v_[seq], rs_src_ = rs_src_v_[seq], last_ub_n_ = last_ub_v_[seq];
     if (pos >= n_past_) return n_past_;
+    if (hp_.flint) return pos;   // attention only: any position (its cells are dropped from there on)
     const int r = n_past_ - pos;
     if (rs_src_ == 0 && r <= o_.n_rs_seq && r < last_ub_n_) return pos;   // inside the last ubatch's snapshots
     int best = 0;
@@ -1360,6 +1398,13 @@ std::string Engine::rollback_to(int pos, int seq) {
     int & n_past_ = n_past_v_[seq]; int & rs_src_ = rs_src_v_[seq]; int & last_ub_n_ = last_ub_v_[seq];
     if (pos == n_past_) return "";
     if (pos == 0) { reset_seq(seq); return ""; }
+    if (hp_.flint) {   // no recurrent state: the sequence's cells from pos on go, nothing to restore
+        if (pos > n_past_) return "cannot resume at position " + std::to_string(pos);
+        kv_.seq_rm(seq, pos);
+        rs_src_ = 0; last_ub_n_ = 0; fresh_v_[seq] = 0;
+        n_past_ = pos;
+        return "";
+    }
     const int r = n_past_ - pos;
     if (r > 0 && rs_src_ == 0 && r <= o_.n_rs_seq && r < last_ub_n_) return rollback(pos, seq);
     int c = seq * kCkpts;
@@ -2483,6 +2528,26 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
     }
     const int st0 = reserve ? 0 : kv_.stream_of(head);   // the ubatch's first KV stream (its streams are consecutive)
     const uint32_t n_kv = reserve ? kv_.ssize : kv_.n_kv;
+    // flint: the sliding layers read only the cells from swa_lo on: below it every cell is free or older than any row of the
+    // ubatch can see (p1 - p0 >= n_swa), so they are masked anyway. Aligned down to 256 cells (llama.cpp's n_kv padding),
+    // so the graph changes every 256 cells. The same values as attending every cell masked, not the same summation split:
+    // IMPULSE_SWA_FULL=1 reads every cell (llama.cpp --swa-full: the bit-for-bit gates)
+    uint32_t swa_lo = 0;
+    static const bool swa_full = getenv("IMPULSE_SWA_FULL") && atoi(getenv("IMPULSE_SWA_FULL")) != 0;
+    if (H.flint && !reserve && !swa_full) {
+        const int32_t need = *std::min_element(positions.begin(), positions.end()) - H.n_swa + 1;   // the oldest position any row sees
+        if (need > 0) {
+            uint32_t lo = n_kv;
+            for (int q = 0; q < ns; ++q) {
+                const int32_t * p = kv_.pos.data() + (size_t) kv_.stream_of(head + q) * kv_.ssize;
+                uint32_t j = 0;
+                while (j < n_kv && p[j] < need) ++j;
+                lo = std::min(lo, j);
+            }
+            swa_lo = lo / 256 * 256;
+            if (swa_lo >= n_kv) swa_lo = 0;
+        }
+    }
     // rs_z: the first new cell of the ubatch (llama_memory_recurrent::find_slot): cleared, and read by every new cell
     int32_t rs_zero = -1;
     if (!reserve) for (int q = 0; q < ns && rs_zero < 0; ++q) if (fresh_v_[head + q]) rs_zero = head + q;
@@ -2496,7 +2561,7 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
     // layer keeps every row, the output rows are gathered before the final mixer)
     const bool wide_h = H.q4x && want_h_ && !reserve;
     const bool staged_build = !reserve && st_l1_ >= 0;
-    const GraphKey key = { n, (int) n_kv, n_outputs, embd_in_ != nullptr, rs_zero, ns, head, L0, L1, wide_h };
+    const GraphKey key = { n, (int) n_kv, n_outputs, embd_in_ != nullptr, rs_zero, ns, head, L0, L1, wide_h, (int) swa_lo };
     const bool reuse = !reserve && g_.valid && g_.key == key && graph_reuse_on();
     uint64_t acc_inc = 0, hit_inc = 0;   // routed pairs the shape alone decides (the whole-layer and all-pool paths)
     const int64_t n_embd = H.n_embd;
@@ -2531,6 +2596,9 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
     ggml_tensor * v_idxs = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, n); ggml_set_input(v_idxs);
     ggml_tensor * kq_mask = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, n_kv, nt, 1, ns);   // [n_kv, n_tps, 1, n_stream]
     ggml_set_input(kq_mask); ggml_set_name(kq_mask, "attn_inp_kq_mask");
+    // flint: the sliding layers' mask over the same cells (llama.cpp's --swa-full shape: one cache, the window in the mask)
+    ggml_tensor * kq_mask_swa = nullptr;
+    if (H.flint) { kq_mask_swa = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, n_kv - swa_lo, nt, 1, ns); ggml_set_input(kq_mask_swa); ggml_set_name(kq_mask_swa, "attn_inp_kq_mask_swa"); }
     // build_attn_inp_kv_impl: the rotations of a quantized cache (head size a multiple of 64)
     ggml_tensor * k_rot = nullptr, * v_rot = nullptr;
     if (ggml_is_quantized(o_.type_k) && H.head_dim % 64 == 0) {
@@ -2546,7 +2614,7 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
     ggml_tensor * s_copy_main  = ggml_view_1d(ctx, s_copy, ns, 0);
     ggml_tensor * s_copy_extra = ggml_view_1d(ctx, s_copy, 0, ns * s_copy->nb[0]);   // no extra cells: the ubatch's cells are consecutive
     // build_inp_pos: IMROPE takes 4 positions per token (text: the same position three times, then 0)
-    ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, (int64_t) n * (H.lfm2 ? 1 : 4));
+    ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, (int64_t) n * (H.pos1() ? 1 : 4));
     ggml_set_input(inp_pos);
     ggml_tensor * inp_out_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_outputs);
     ggml_set_input(inp_out_ids);
@@ -2944,7 +3012,7 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
             Vcur = mm_s(ctx, ggml_mul_mat(ctx, l.wv, cur), l.wv_s);
             if (lora_) Vcur = lora_->add(ctx, l.wv, cur, Vcur);
             nm(Qcur_full, "Qcur_full", il); nm(Kcur, "Kcur", il); nm(Vcur, "Vcur", il);
-            Qcur = H.lfm2 ? ggml_reshape_3d(ctx, Qcur_full, n_embd_head, H.n_head, n) :
+            Qcur = H.pos1() ? ggml_reshape_3d(ctx, Qcur_full, n_embd_head, H.n_head, n) :
                 ggml_view_3d(ctx, Qcur_full, n_embd_head, H.n_head, n,
                                               ggml_element_size(Qcur_full) * n_embd_head * 2,
                                               ggml_element_size(Qcur_full) * n_embd_head * 2 * H.n_head, 0);
@@ -2956,7 +3024,7 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
             Kcur = norm(ctx, Kcur, l.k_norm, il);
             nm(Kcur, "Kcur_normed", il);
             ggml_tensor * gate = nullptr;
-            if (!H.lfm2) {
+            if (!H.pos1()) {
             gate = ggml_view_3d(ctx, Qcur_full, n_embd_head, H.n_head, n,
                                               ggml_element_size(Qcur_full) * n_embd_head * 2,
                                               ggml_element_size(Qcur_full) * n_embd_head * 2 * H.n_head,
@@ -2965,7 +3033,14 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
             nm(gate, "gate_reshaped", il);
             }
             Vcur = ggml_reshape_3d(ctx, Vcur, n_embd_head, H.n_head_kv, n);
-            if (H.lfm2) {
+            if (H.flint) {   // flint.cpp: RoPE (NEOX) on the sliding layers only
+                if (H.has_rope[il]) {
+                    Qcur = ggml_rope_ext(ctx, Qcur, inp_pos, nullptr, H.n_rot, GGML_ROPE_TYPE_NEOX, H.n_ctx_train, H.rope_base,
+                                         1.0f, kExtFactor, kAttnFactor, kBetaFast, kBetaSlow);
+                    Kcur = ggml_rope_ext(ctx, Kcur, inp_pos, nullptr, H.n_rot, GGML_ROPE_TYPE_NEOX, H.n_ctx_train, H.rope_base,
+                                         1.0f, kExtFactor, kAttnFactor, kBetaFast, kBetaSlow);
+                }
+            } else if (H.lfm2) {
                 Qcur = ggml_rope_ext(ctx, Qcur, inp_pos, nullptr, H.n_rot, GGML_ROPE_TYPE_NEOX, H.n_ctx_train, H.rope_base,
                                      1.0f, kExtFactor, kAttnFactor, kBetaFast, kBetaSlow);
                 Kcur = ggml_rope_ext(ctx, Kcur, inp_pos, nullptr, H.n_rot, GGML_ROPE_TYPE_NEOX, H.n_ctx_train, H.rope_base,
@@ -2998,14 +3073,15 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
             // IMPULSE_QSA_DENSE=1 keeps llama.cpp's dense masked attention (the bit-for-bit comparisons)
             static const bool qsa_dense = getenv("IMPULSE_QSA_DENSE") && atoi(getenv("IMPULSE_QSA_DENSE")) != 0;
             const bool sparse = top_k && nt == 1 && !qsa_dense;
-            ggml_tensor * att_mask = top_k && !sparse ? qsa_mask(top_k, kq_mask) : kq_mask;   // QSA: the cells the indexer picked
+            ggml_tensor * att_mask = top_k && !sparse ? qsa_mask(top_k, kq_mask) : (kq_mask_swa && H.is_swa[il]) ? kq_mask_swa : kq_mask;   // QSA: the cells the indexer picked
             // llama_kv_cache::get_k / get_v: [hd, heads, n_kv, ns] over the ubatch's streams; Q as [hd, heads, n_tps, n_stream]
-            ggml_tensor * k = ggml_view_4d(ctx, Kc, n_embd_head, H.n_head_kv, n_kv, ns,
+            const uint32_t c0 = (kq_mask_swa && H.is_swa[il]) ? swa_lo : 0;   // flint's sliding layers: from swa_lo on
+            ggml_tensor * k = ggml_view_4d(ctx, Kc, n_embd_head, H.n_head_kv, n_kv - c0, ns,
                                            ggml_row_size(Kc->type, n_embd_head), ggml_row_size(Kc->type, n_gqa),
-                                           ggml_row_size(Kc->type, n_gqa * kv_.ssize), (size_t) st0 * ggml_row_size(Kc->type, n_gqa * kv_.ssize));
-            ggml_tensor * v = ggml_view_4d(ctx, Vc, n_embd_head, H.n_head_kv, n_kv, ns,
+                                           ggml_row_size(Kc->type, n_gqa * kv_.ssize), (size_t) st0 * ggml_row_size(Kc->type, n_gqa * kv_.ssize) + c0 * ggml_row_size(Kc->type, n_gqa));
+            ggml_tensor * v = ggml_view_4d(ctx, Vc, n_embd_head, H.n_head_kv, n_kv - c0, ns,
                                            ggml_row_size(Vc->type, n_embd_head), ggml_row_size(Vc->type, n_gqa),
-                                           ggml_row_size(Vc->type, n_gqa * kv_.ssize), (size_t) st0 * ggml_row_size(Vc->type, n_gqa * kv_.ssize));
+                                           ggml_row_size(Vc->type, n_gqa * kv_.ssize), (size_t) st0 * ggml_row_size(Vc->type, n_gqa * kv_.ssize) + c0 * ggml_row_size(Vc->type, n_gqa));
             ggml_tensor * q = ggml_view_4d(ctx, Qcur, Qcur->ne[0], Qcur->ne[1], nt, ns, Qcur->nb[1], Qcur->nb[2], Qcur->nb[2] * nt, 0);
             q = ggml_permute(ctx, q, 0, 2, 1, 3);
             ggml_tensor * kp = ggml_permute(ctx, k, 0, 2, 1, 3);
@@ -3045,7 +3121,7 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
                 cur = joined;
             } else {
             cur = ggml_flash_attn_ext(ctx, q, kp, vp, att_mask, kq_scale, 0.0f, 0.0f);
-            ggml_flash_attn_ext_add_sinks(cur, nullptr);
+            ggml_flash_attn_ext_add_sinks(cur, l.attn_sinks);   // flint: the learned sinks; nullptr otherwise
             ggml_flash_attn_ext_set_n_kv_max(cur, 0);
             ggml_prec_set_acc(cur, GGML_PREC_F32);
             cur = ggml_reshape_2d(ctx, cur, cur->ne[0] * cur->ne[1], cur->ne[2] * cur->ne[3]);
@@ -3070,7 +3146,7 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
         // llama.cpp's inp_out_ids always exists (build_inp_out_ids: a constant topology for pipeline parallelism): the last layer
         // always selects the output rows, none of them in a prompt piece that outputs nothing
         // qwen4exp selects them there too, after the mixer and before the attention combine (the wide residual with them)
-        const bool select_last = (H.lfm2 || H.q4x) && il == H.n_layer - 1 && !wide_h;
+        const bool select_last = (H.lfm2 || H.q4x || H.flint) && il == H.n_layer - 1 && !wide_h;
         if (select_last) {
             cur = ggml_get_rows(ctx, cur, inp_out_ids);
             if (H.q4x) {
@@ -3116,7 +3192,7 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
             const int64_t n_expert = H.n_expert, n_used = H.n_expert_used;
             ggml_tensor * logits_r = ggml_mul_mat(ctx, l.gate_inp, x);
             nm(logits_r, "ffn_moe_logits", il);
-            ggml_tensor * probs = H.lfm2 ? ggml_sigmoid(ctx, logits_r) : ggml_soft_max(ctx, logits_r);
+            ggml_tensor * probs = H.lfm2 || H.flint ? ggml_sigmoid(ctx, logits_r) : ggml_soft_max(ctx, logits_r);
             nm(probs, "ffn_moe_probs", il);
             ggml_tensor * selection_probs = l.expert_bias ? ggml_add(ctx, probs, l.expert_bias) : probs;
             ggml_tensor * selected = ggml_argsort_top_k(ctx, selection_probs, (int) n_used);
@@ -3149,7 +3225,10 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
                 nm(g, sc[0] ? "ffn_moe_gate_scaled" : "ffn_moe_gate", il);
                 g = ggml_swiglu_split(ctx, g, up);
                 nm(g, "ffn_moe_swiglu", il);
+                ggml_tensor * amax_e = nullptr;
+                if (H.flint) { auto r = down_amax(ctx, g); g = r.first; amax_e = r.second; }
                 auto * result = mm_id_s(ctx, ggml_mul_mat_id(ctx, dw, g, ids), sc[2], selected, n_ff_tokens);
+                if (amax_e) result = ggml_mul(ctx, result, amax_e);
                 // Slot ids index cached base weights; the adapter always indexes original expert ids.
                 // Miss slots have zero gate/up activations, so their GPU LoRA contribution is also zero.
                 return lora_ ? lora_->add(ctx, l.down_exps, g, result, selected) : result;
@@ -3225,9 +3304,12 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
                 nm(g, csc[0] ? "ffn_moe_gate_scaled" : "ffn_moe_gate", il);
                 ggml_tensor * sw = ggml_swiglu_split(ctx, g, up);
                 nm(sw, "ffn_moe_swiglu", il);
+                ggml_tensor * amax_e = nullptr;
+                if (H.flint) { auto r = down_amax(ctx, sw); sw = r.first; amax_e = r.second; }
                 experts = ggml_mul_mat_id(ctx, RG->view[il][2], sw, selected);
                 ring_use->use[experts] = { RG->card, RG->pos[il][2] };
                 experts = mm_id_s(ctx, experts, csc[2], selected, n_ff_tokens);
+                if (amax_e) experts = ggml_mul(ctx, experts, amax_e);
             } else {
                 experts = mm_path(l.gate_exps, l.up_exps, l.down_exps, selected, ls);
             }
@@ -3247,7 +3329,7 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
             }
             nm(moe_out, "ffn_moe_out", il);
         }
-        if (H.lfm2 || H.dense) { if (moe_out) cur = moe_out; if (H.dense) nm(cur, "ffn_out", il); }
+        if (H.lfm2 || H.dense || (H.flint && il < H.n_dense)) { if (moe_out) cur = moe_out; if (H.dense || H.flint) nm(cur, "ffn_out", il); }
         else {   // build_ffn(SILU, PAR): up, gate, swiglu, down
             ggml_tensor * tmp = ggml_mul_mat(ctx, l.up_shexp, x);
             nm(tmp, "ffn_up", il);
@@ -3261,12 +3343,14 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
             nm(shexp, "ffn_down", il);
             if (l.down_shexp_s) { shexp = ggml_mul(ctx, shexp, l.down_shexp_s); nm(shexp, "ffn_down_s", il); }
             nm(shexp, "ffn_shexp", il);
+            if (!H.flint) {   // flint: an ungated shared expert
             ggml_tensor * sg = ggml_mul_mat(ctx, l.gate_inp_shexp, x);
             nm(sg, "shared_expert_gate", il);
             sg = ggml_sigmoid(ctx, sg);
             nm(sg, "shared_expert_gate_sigmoid", il);
             shexp = ggml_mul(ctx, shexp, sg);
             nm(shexp, "ffn_shexp_gated", il);
+            }
             cur = ggml_add(ctx, moe_out, shexp);
             nm(cur, "ffn_out", il);
         }
@@ -3307,7 +3391,7 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
     ggml_set_name(cur, "h_nextn");
     ggml_set_output(cur);
     t_hn = cur;   // every row (draft-mtp: llama_set_embeddings_nextn(ctx_tgt, true, unmasked)), read when want_h_
-    if (!H.lfm2 || n_outputs == 0) cur = ggml_get_rows(ctx, cur, inp_out_ids);
+    if (!(H.lfm2 || H.flint) || n_outputs == 0) cur = ggml_get_rows(ctx, cur, inp_out_ids);
     ggml_set_name(cur, "result_norm");
     ggml_set_output(cur);
     }
@@ -3329,12 +3413,12 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
     // from the start they are there once (one card per graph: a pipelined stage, or a single card)
     if (ring_use && (staged_build || gpus_.size() == 1)) {
         ggml_backend_t gb = gpus_[staged_build ? st_card_ : 0];
-        for (ggml_tensor * t : { kq_mask, k_idxs, v_idxs, inp_pos, s_copy, k_rot, v_rot, qsa_k_idxs, cell_blk, blk_cells, blk_pos, qsa_bias })
+        for (ggml_tensor * t : { kq_mask, kq_mask_swa, k_idxs, v_idxs, inp_pos, s_copy, k_rot, v_rot, qsa_k_idxs, cell_blk, blk_cells, blk_pos, qsa_bias })
             if (t) ggml_backend_sched_set_tensor_backend(sched_, t, gb);
     }
     if (!ggml_backend_sched_alloc_graph(sched_, gf)) { ggml_free(ctx); return "graph allocation failed"; }
     g_.ctx = ctx; g_.gf = gf; g_.key = key; g_.valid = true;
-    g_.inp_tokens = inp_tokens; g_.inp_embd = inp_embd; g_.inp_pos = inp_pos; g_.k_idxs = k_idxs; g_.v_idxs = v_idxs; g_.kq_mask = kq_mask;
+    g_.inp_tokens = inp_tokens; g_.inp_embd = inp_embd; g_.inp_pos = inp_pos; g_.k_idxs = k_idxs; g_.v_idxs = v_idxs; g_.kq_mask = kq_mask; g_.kq_mask_swa = kq_mask_swa; g_.swa_lo = swa_lo;
     g_.s_copy = s_copy; g_.k_rot = k_rot; g_.v_rot = v_rot; g_.inp_out_ids = inp_out_ids; g_.t_logits = t_logits; g_.t_h = t_hn;
     g_.adapt_ids = std::move(adapt_ids); g_.dcheck = dcheck_; g_.acc_inc = acc_inc; g_.hit_inc = hit_inc;
     g_.ple_rows = ple_rows; g_.qsa_k_idxs = qsa_k_idxs; g_.cell_blk = cell_blk; g_.blk_cells = blk_cells; g_.blk_pos = blk_pos;
@@ -3355,7 +3439,7 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
         ggml_backend_tensor_set(G.inp_tokens, zero.data(), 0, n * sizeof(int32_t));
         ggml_backend_tensor_set(G.inp_embd, embd_in_, 0, (size_t) n * n_embd * sizeof(float));
     } else ggml_backend_tensor_set(G.inp_tokens, toks, 0, n * sizeof(int32_t));
-    if (H.lfm2) ggml_backend_tensor_set(G.inp_pos, positions.data(), 0, (size_t) n * sizeof(int32_t));
+    if (H.pos1()) ggml_backend_tensor_set(G.inp_pos, positions.data(), 0, (size_t) n * sizeof(int32_t));
     else if (pos4_in_) ggml_backend_tensor_set(G.inp_pos, pos4_in_, 0, (size_t) n * 4 * sizeof(int32_t));
     else {
         std::vector<int32_t> p4((size_t) n * 4);
@@ -3370,7 +3454,7 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
         for (int q = 0; q < ns; ++q)   // each sequence's rows over its own stream's cells
             lite::fill_mask(md.data() + (size_t) q * nt * kv_.n_kv, nt, kv_.n_kv, kv_.pos.data() + (size_t) kv_.stream_of(head + q) * kv_.ssize,
                             lo.data(), positions.data() + (size_t) q * nt, o_.n_threads);
-        if (pos4_in_ && !H.lfm2) {   // an image ubatch: the M-RoPE causal rule, a cell of the token's own position is hidden when
+        if (pos4_in_ && !H.pos1()) {   // an image ubatch: the M-RoPE causal rule, a cell of the token's own position is hidden when
             // it lies after the token in raster order (llama_kv_cache::set_input_kq_mask, is_2d); one sequence per stream
             const ggml_fp16_t drop = ggml_fp32_to_fp16(-INFINITY);
             for (int q = 0; q < ns; ++q) {
@@ -3387,13 +3471,21 @@ std::string Engine::ubatch(const int32_t * toks, int n, int pos0, int n_out, std
             }
         }
         ggml_backend_tensor_set(G.kq_mask, md.data(), 0, md.size() * sizeof(ggml_fp16_t));
+        if (G.kq_mask_swa) {   // LLAMA_SWA_TYPE_STANDARD: a cell is hidden when p1 - p0 >= n_swa (the current one and n_swa - 1 before)
+            const uint32_t c0 = G.swa_lo, w = kv_.n_kv - c0;   // the cells from swa_lo on
+            for (int i = 0; i < n; ++i) lo[i] = std::max(0, positions[i] - H.n_swa + 1);
+            for (int q = 0; q < ns; ++q)
+                lite::fill_mask(md.data() + (size_t) q * nt * w, nt, w, kv_.pos.data() + (size_t) kv_.stream_of(head + q) * kv_.ssize + c0,
+                                lo.data() + (size_t) q * nt, positions.data() + (size_t) q * nt, o_.n_threads);
+            ggml_backend_tensor_set(G.kq_mask_swa, md.data(), 0, (size_t) w * n * sizeof(ggml_fp16_t));
+        }
     }
     {   // s_copy (llama_memory_recurrent::s_copy): each cell's source row, rs_idx * n_seq + src0 (a new cell reads rs_z)
         std::vector<int32_t> sc(ns);
         for (int q = 0; q < ns; ++q) sc[q] = rs_src_v_[head + q] * NS + (fresh_v_[head + q] ? rs_zero : head + q);
         if (st_replay_) sc = st_replay_->s_copy;
         if (st_rec_) st_rec_->s_copy = sc;
-        ggml_backend_tensor_set(G.s_copy, sc.data(), 0, sc.size() * sizeof(int32_t));
+        if (G.s_copy->buffer) ggml_backend_tensor_set(G.s_copy, sc.data(), 0, sc.size() * sizeof(int32_t));   // flint: no recurrent layer reads it
     }
     for (ggml_tensor * r : { G.k_rot, G.v_rot }) {
         if (!r) continue;

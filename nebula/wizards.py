@@ -100,14 +100,17 @@ VARIANT_FIELD = {"key": "variant", "label": "", "type": "choice", "options": [
     {"value": "uncensored", "label": "Uncensored: answers anything (for adults)"}]}
 
 
-def _catalog_options(server, friends: bool = False, variant: str | None = None) -> list:
-    """The catalog as the page's model cards: the recommended one first, what each needs, why one does not fit."""
+def _catalog_options(server, friends: bool = False, variant: str | None = None, ask_repo: bool = True) -> list:
+    """The catalog as the page's model cards: the recommended one first, what each needs, why one does not fit. A card
+    that asks for its file (ask_repo) only where the setup has that step (Run a model, not the one-click first run)."""
     from nebula import catalog as C
     from nebula import yard
     o = C.offer(yard.models_dir(server), friends, variant)
-    rows = sorted(o["models"], key=lambda m: (m["id"] != o["recommended"], bool(m["lacks"])))
+    rows = sorted((m for m in o["models"] if ask_repo or not m.get("ask_repo")),
+                  key=lambda m: (m["id"] != o["recommended"], bool(m["lacks"])))
     return [{"value": m["id"], "label": m["name"], "about": m["about"], "maker": m.get("maker"),
-             "size": "on this computer: no download" if _cached_files(server, m) is not None else f"{m['download_gb']:.0f} GB download",
+             "size": "you choose the file and its size" if m.get("ask_repo") else
+                     "on this computer: no download" if _cached_files(server, m) is not None else f"{m['download_gb']:.0f} GB download",
              "note": m.get("content"), "recommended": m["id"] == o["recommended"], "lacks": m["lacks"], "disabled": False,
              "engine_ok": o["impulse"], "engine_why": o["impulse_why"]} for m in rows]
 
@@ -116,6 +119,8 @@ def _cached_files(server, m: dict) -> dict | None:
     """A catalog model's files already in the Hugging Face cache at its pinned revision ({file: path}); None when its
     main file is not there (the drafter or the projector may still be downloaded)."""
     from nebula import hfcache
+    if m.get("ask_repo"):                               # its file is the owner's choice, not the catalog's
+        return None
     main = hfcache.find(server.cfg, m["repo"], m.get("revision"), m["file"])
     if main is None:
         return None
@@ -125,6 +130,10 @@ def _cached_files(server, m: dict) -> dict | None:
             p = hfcache.find(server.cfg, m["repo"], m.get("revision"), m[k])
             if p:
                 out[m[k]] = p
+    for f in m.get("shards") or []:                    # a model split over several files: the others beside the first
+        p = hfcache.find(server.cfg, m["repo"], m.get("revision"), f)
+        if p:
+            out[f] = p
     return out
 
 
@@ -147,10 +156,17 @@ def _cached_plan(server, a: dict) -> dict:
     pkg, binary, why = _engine_for(server, {k: v for k, v in a.items() if k != "package"} if not a.get("advanced") else a)
     if not binary:
         raise WizardError(409, why or f"{pkg} isn't on this computer")
+    size = None
+    if _is_portable(server, binary):
+        try:
+            size = os.path.getsize(m["path"]) / 2**20
+        except (OSError, KeyError):
+            pass
     return {"lines": [f"Use {hfcache.label(m)} from your Hugging Face cache (no download; Nebula only reads it)",
-                      f"Run it on this computer with {'Impulse 0.1.1' if pkg == 'impulse' else pkg}" + (", reading pictures" if m.get("mmproj") else ""),
+                      *_portable_lines(server, binary),
+                      _engine_line(server, pkg, binary) + (", reading pictures" if m.get("mmproj") else ""),
                       "Send it a hello to check it answers"],
-            "warnings": [why] if why else []}
+            "warnings": ([why] if why else []) + (_vulkan_fit(server, size, a) if _is_portable(server, binary) else [])}
 
 
 def _cached_deploy(server, job, a: dict) -> dict:
@@ -158,40 +174,276 @@ def _cached_deploy(server, job, a: dict) -> dict:
     pkg, binary, _why = _engine_for(server, {k: v for k, v in a.items() if k != "package"} if not a.get("advanced") else a)
     name = a.get("name") or _free_name(server, m["repo"].split("/")[-1].lower().replace("-gguf", "")[:24])
     opts = {"mmproj": True, "mmproj_file": m["mmproj"]} if m.get("mmproj") else {}
-    job.deploy({"name": name, "kind": pkg, "binary": binary, "model": m["path"], "context": int(a.get("context") or 8192),
-                "slots": 1, "options": opts, **({"cwd": a["cwd"]} if a.get("cwd") else {})})
+    card = _cards_for(a)
+    job.deploy({"name": name, "kind": pkg, **_portable_spec(server, job, pkg, binary, a), "model": m["path"], "context": int(a.get("context") or 8192),
+                "slots": 1, "options": opts, **({"card": card} if card else {}), **({"cwd": a["cwd"]} if a.get("cwd") else {})})
     return {"model": name, "test": job.test(name)}
 
 
+PORTABLE = "impulse-portable"   # _engine_for's program while Impulse portable is still to be downloaded (nebula/pieces.py)
+FLASHNEXT_NEEDS = ("Qwen3.8 Flash-Next runs on Impulse with an NVIDIA graphics card (RTX 30, 40 or 50) on Linux; this "
+                   "computer has none, so Nebula cannot run it here")
+
+
 def _engine_for(server, a: dict) -> tuple[str, str | None, str | None]:
-    """(the package, its program, why it cannot run here): Impulse where it runs, else llama.cpp."""
+    """(the package, its program, why Impulse cannot run here): Impulse where it runs (an NVIDIA card); else Impulse
+    portable (llama.cpp's server with Impulse's hooks) on a Radeon or another card through Vulkan, else on the CPU -
+    downloaded first when it is not here (PORTABLE); else a llama-server of the owner's."""
     from nebula import catalog as C
     from nebula import packages as P
-    if a.get("package"):                                       # Advanced: chosen by hand
-        return a["package"], a.get("binary") or P.locate(a["package"], server.cfg.base_dir), None
     runs, why = C.impulse_runs_here()
+    if a.get("package") and (runs or a["package"] != "impulse"):    # Advanced: chosen by hand (Impulse where it runs)
+        return a["package"], a.get("binary") or P.locate(a["package"], server.cfg.base_dir), None
     if runs:
         b = a.get("binary") or P.locate("impulse", server.cfg.base_dir)
         return "impulse", b, None if b else "Impulse isn't on this computer yet"
+    from nebula import halo_engine as HE, pieces
+    port = HE.find_portable(server.cfg.base_dir)
+    if port or pieces.pin("impulse-portable") is not None:
+        return "llama.cpp", port or PORTABLE, f"{why}: Nebula runs it with Impulse portable instead, {_vulkan_where(server, a)}"
     b = a.get("binary") or P.locate("llama.cpp", server.cfg.base_dir)
     return "llama.cpp", b, why + (": Nebula uses llama.cpp instead" if b else ", and llama.cpp isn't on this computer either")
+
+
+def _is_portable(server, binary) -> bool:
+    from nebula import halo_engine as HE
+    return binary == PORTABLE or (binary is not None and binary == HE.find_portable(server.cfg.base_dir))
+
+
+def _vulkan_card(server, a: dict | None = None) -> dict | None:
+    """The card Impulse portable runs a model on: the one picked (Advanced), else Nebula's pick (catalog.vulkan_pick)."""
+    from nebula import catalog as C
+    return C.vulkan_pick(C.vulkan_cards(server.cfg.base_dir), (a or {}).get("vk_card") or None)
+
+
+def _vulkan_where(server, a: dict | None = None) -> str:
+    """Where Impulse portable runs a model here, in a few words."""
+    from nebula import halo_engine as HE
+    c = _vulkan_card(server, a)
+    if c:
+        return f"on the {c['name']} through Vulkan"
+    if HE.find_portable(server.cfg.base_dir):
+        return "on the CPU (no graphics card answers through Vulkan here)"
+    return "on a Radeon or another graphics card through Vulkan, else on the CPU"
+
+
+def _engine_line(server, pkg: str, binary) -> str:
+    if _is_portable(server, binary):
+        return ("Run it with Impulse portable, directly on this computer (not in a sandbox: a sandbox does not reach the "
+                "graphics card)")
+    return f"Run it on this computer with {'Impulse 0.1.1' if pkg == 'impulse' else pkg}"
+
+
+def _portable_lines(server, binary) -> list:
+    """The download Impulse portable needs first, said plainly (nothing when it is here)."""
+    from nebula import pieces
+    return [pieces.say("impulse-portable")[0].upper() + pieces.say("impulse-portable")[1:]] if binary == PORTABLE else []
+
+
+def _vulkan_fit(server, size_mb: float | None, a: dict | None = None) -> list:
+    """Impulse portable's fit, in plain words: all on the card, or how much goes on it and how much stays in RAM
+    (llama.cpp's --fit places the layers, and a mixture of experts' experts, by the card's free memory)."""
+    from nebula import engines as E, halo_engine as HE
+    c = _vulkan_card(server, a)
+    ram = E.ram_free_mb()
+    if not c:
+        if HE.find_portable(server.cfg.base_dir):
+            return ["No graphics card answers through Vulkan here: it runs on the CPU, from RAM (slower than on a card)."]
+        return ["Impulse portable puts as much of it as fits on the graphics card (through Vulkan) and keeps the rest in RAM."]
+    if not size_mb:
+        return [f"It goes on the {c['name']} ({c['free_mb'] / 1024:.1f} GB free) as far as it fits; the rest stays in RAM."]
+    room = max(0, c["free_mb"] - 1024)                           # --fit keeps 1 GB of the card free
+    if size_mb <= room:
+        return [f"It fits on the {c['name']} ({c['free_mb'] / 1024:.1f} GB free)."]
+    rest = size_mb - room
+    msg = (f"About {room / 1024:.1f} GB of it goes on the {c['name']} and the rest, about {rest / 1024:.1f} GB, stays in "
+           "RAM: it runs, more slowly than all on a card.")
+    if ram is not None and rest > ram:
+        msg += f" This computer has {ram / 1024:.1f} GB of RAM free now, so it may not start: close other programs first."
+    return [msg]
+
+
+def _portable_spec(server, job, pkg: str, binary, a: dict | None = None) -> dict:
+    """The deployment's program: Impulse portable downloaded now when it is not here (said first), and run directly on
+    this computer (a sandbox does not reach the graphics card); any other program as it is."""
+    if not _is_portable(server, binary):
+        return {"binary": binary}
+    if binary == PORTABLE:
+        from nebula import pieces
+        job.say(pieces.say("impulse-portable"), "running")
+        binary = pieces.fetch("impulse-portable", server.cfg.base_dir,
+                              lambda got, total: job.steps[-1].__setitem__("progress", [got, total]))
+        job.steps[-1]["state"] = "done"
+    c = _vulkan_card(server, a)                          # one card, by its name (found again at each start)
+    return {"binary": binary, "where": "local", **({"vulkan_card": c["name"]} if c else {}),
+            "note": f"Impulse portable (no NVIDIA card here): {'the ' + c['name'] + ' through Vulkan' if c else 'the CPU'}"}
+
+
+# --- a catalog card that asks for its file (Qwen3.8 Flash-Next): a Hugging Face repository the owner picks
+def _ask_repo(a: dict) -> dict | None:
+    from nebula import catalog as C
+    m = C.get(a.get("model") or "") if a.get("model") else None
+    return m if m and m.get("ask_repo") else None
+
+
+def _size_name(c: dict) -> str:
+    """A size as the repository names it: its folder (UD-Q4_K_XL) when its files are in one, else its quantization."""
+    return c["id"].split("/", 1)[0] if "/" in c["id"] else os.path.basename(c["id"]).rsplit(".gguf", 1)[0]
+
+
+def _gb(b: int) -> str:
+    return f"{b / 2**30:.0f} GB"
+
+
+def _repo_lacks(n: dict, have: dict) -> list[str]:
+    """What this computer lacks for it, in GB as the rest of the page says them: what it needs rounded up, what this
+    computer has rounded down (so "needs 177 GB, 177 GB free" never happens)."""
+    import math
+    out = []
+    for k, what in (("gpu_mb", "a graphics card with {} GB"), ("ram_mb", "{} GB of memory"), ("disk_mb", "{} GB of free disk")):
+        need, got = n.get(k, 0), have.get(k.replace("_mb", "_mb"), 0)
+        if k != "gpu_mb" and not got:
+            continue                                     # not known here: not said
+        if got < need:
+            out.append(what.format(math.ceil(need / 1024)) + (f" (this computer has {math.floor(got / 1024)} GB"
+                                                                + (" free)" if k == "disk_mb" else ")") if got else " (none found)"))
+    return out
+
+
+def _repo_needs(size: int) -> dict:
+    """What a Flash-Next file of this size needs here: its experts stay in RAM (the file plus ~8 GB), the file on disk
+    (plus ~2 GB), and a card of 12 GB for the rest."""
+    mb = size // 2**20
+    return {"gpu_mb": 12000, "ram_mb": mb + 8192, "disk_mb": mb + 2048}
+
+
+def _repo_choice(server, m: dict, a: dict) -> dict:
+    """The repository the owner pasted, the size they picked, checked: a Flash-Next file (read from its first bytes, not
+    downloaded), its total size, and whether it fits this computer (else the smaller sizes that do)."""
+    from nebula import catalog as C, hf, yard
+    link = str(a.get("fn_link") or "").strip()
+    if not link:
+        raise WizardError(400, f"Paste a link to a Hugging Face repository with a {m['name']} GGUF file "
+                               f"(for example {m['example_repo']}).")
+    r = _call(server, "/api/yard/hf/resolve", {"url": link})
+    choices = r.get("choices") or []
+    pick = a.get("fn_quant") or r.get("chosen") or (choices[0]["id"] if len(choices) == 1 else None)
+    c = next((x for x in choices if x["id"] == pick or _size_name(x).upper() == str(pick or "").upper()
+              or (x.get("quant") or "").upper() == str(pick or "").upper()), None)
+    first = c or (choices[0] if choices else None)          # what it is: read once, from the first size's first file
+    if first is None:
+        raise WizardError(404, "This repository has no GGUF model files.")
+    try:
+        arch = hf.remote_architecture(r["repo"], r.get("revision") or "main", first["files"][0], yard.pulls(server).token())
+    except hf.HfError as e:
+        raise WizardError(e.status, str(e)) from None
+    if arch not in (m.get("architectures") or []):
+        raise WizardError(409, f"This file is not {m['name']}: it says it is {arch or 'something Nebula cannot read'}, and "
+                               f"{m['name']} files say {' or '.join(m['architectures'])}. Pick a {m['name']} repository, "
+                               "or use one of the other cards for this model.")
+    if c is None:
+        raise WizardError(400, f"This repository has {len(choices)} sizes. Pick one: "
+                               + ", ".join(f"{_size_name(x)} ({_gb(x['size'])})" for x in choices) + ".")
+    have = C.machine(yard.models_dir(server))
+    lacks = _repo_lacks(_repo_needs(c["size"]), have)
+    if lacks:
+        smaller = [x for x in choices if x["size"] < c["size"] and not _repo_lacks(_repo_needs(x["size"]), have)]
+        raise WizardError(409, f"{_size_name(c)} ({_gb(c['size'])}) will not fit this computer: it needs "
+                               + "; ".join(lacks) + ". " + (("Smaller sizes in this repository that fit: " +
+                               ", ".join(f"{_size_name(x)} ({_gb(x['size'])})" for x in sorted(smaller, key=lambda x: -x["size"])) + ".")
+                               if smaller else "None of this repository's sizes fit this computer."))
+    return {"repo": r["repo"], "revision": r.get("revision") or "main", "choice": c, "arch": arch, "needs": _repo_needs(c["size"])}
+
+
+def _fn_placement(server) -> tuple[str, list]:
+    """Where a Flash-Next engine will run, as the preview says it, and its warnings: in a sandbox only when one is
+    there to run it in (an OpenShell gateway running; on Windows the Safe sandbox), else plainly on this computer."""
+    from nebula import engines, flashnext
+    outside = ["it runs outside a sandbox: it can read what your user can"]
+    if flashnext.PLACEMENT != "sandbox":
+        return "directly on this computer (not in a sandbox)", outside
+    path = getattr(getattr(server, "cfg", None), "path", None)
+    where, why = engines.sandbox_plan({"kind": "impulse"}, conf_dir=os.path.dirname(os.path.abspath(path)) if path else None)
+    if where == "openshell":
+        return "in a sandbox, like your other models", []
+    return f"directly on this computer, not in a sandbox ({why})", outside
+
+
+def _repo_lines(server, m: dict, a: dict) -> tuple[list, list]:
+    from nebula import flashnext
+    x = _repo_choice(server, m, a)
+    c, n = x["choice"], x["needs"]
+    files = len(c["files"])
+    where, warn = _fn_placement(server)
+    return ([f"Download {_size_name(c)} from {x['repo']} ({_gb(c['size'])}" + (f", {files} files" if files > 1 else "")
+             + "), each file checked against the checksum Hugging Face publishes for it",
+             f"It is {m['name']}: its file says {x['arch']}",
+             f"It needs about {-(-n['ram_mb'] // 1024)} GB of memory, {-(-n['disk_mb'] // 1024)} GB of free disk and a graphics card "
+             f"with {-(-n['gpu_mb'] // 1024)} GB: this computer has them",
+             "Run it with Impulse " + where,
+             "Send it a hello to check it answers"], warn)
+
+
+def _deploy_repo(server, job, a: dict, m: dict) -> dict:
+    x = _repo_choice(server, m, a)
+    path = job.pull(a["fn_link"], x["choice"]["id"])
+    name = a.get("name") or _free_name(server, m["id"])
+    card = _cards_for(a)
+    from nebula import flashnext
+    job.deploy({"name": name, "kind": "impulse", "model": path, "context": int(m.get("context") or 32768), "slots": 1,
+                "options": {}, **({"card": card} if card else {}), **({"where": "local"} if flashnext.PLACEMENT == "local" else {})})
+    return {"model": name, "test": job.test(name)}
+
+
+def _cards_for(a: dict) -> str | None:
+    """The card(s) a guided setup gives its model: the ones the answers name ("cards": UUIDs or indexes), else this
+    machine's card with the most free memory. Without one, a sandbox would have no GPU, and an engine run here every card."""
+    if a.get("cards"):
+        return ",".join(str(c) for c in a["cards"])
+    from nebula import engines
+    try:
+        have = engines.cards()
+    except Exception:  # noqa: BLE001
+        have = []
+    if not have:
+        return None
+    best = max(have, key=lambda c: int(c.get("memory_mb", 0)) - int(c.get("used_mb", 0)))
+    return str(best.get("uuid") or best.get("index"))
 
 
 def _deploy_lines(server, a: dict, m: dict) -> tuple[list, list]:
     pkg, binary, why = _engine_for(server, a)
     here = _cached_files(server, m)
-    lines = [f"Use {m['name']} from your Hugging Face cache (no download)" if here is not None else
-             f"Download {m['name']} ({m['download_gb']:.0f} GB) into Nebula's models folder",
-             f"Run it on this computer with {'Impulse 0.1.1' if pkg == 'impulse' else pkg}" + (", reading pictures" if m.get("mmproj") else ""),
+    whole = here is not None and all(f in here for f in m.get("shards") or [])
+    lines = [f"Use {m['name']} from your Hugging Face cache (no download)" if whole else
+             f"Download {m['name']} ({m['download_gb']:.0f} GB" + (f", {1 + len(m['shards'])} files" if m.get("shards") else "")
+             + ") into Nebula's models folder",
+             *_portable_lines(server, binary),
+             _engine_line(server, pkg, binary) + (", reading pictures" if m.get("mmproj") else ""),
              "Send it a hello to check it answers"]
+    from nebula import catalog as C
+    lay = C.layout(m) if pkg == "impulse" and not a.get("cards") else None
+    if lay and "," in lay["card"]:
+        lines.insert(2, f"Use {len(lay['card'].split(','))} cards together: {lay['about']}")
     warn = []
+    ram = (m.get("needs") or {}).get("ram_free_mb")
+    if ram and not (lay and int((lay.get("options") or {}).get("n_cpu_moe", -1)) == 0):   # its experts stay in RAM
+        from nebula import engines as E
+        have = E.ram_free_mb()
+        warn.append(f"It keeps its experts in RAM: it needs about {round(ram / 1024)} GB of free RAM"
+                    + (f" (this computer has {round(have / 1024)} GB free now)." if have is not None else ".")
+                    + (" Close other programs first, or it will not start." if have is not None and have < ram else "")
+                    + (" Nebula runs in WSL, which gets half of the PC's RAM by default: \"Let Nebula use more memory\" below "
+                       "raises that (in .wslconfig, backed up first)." if have is not None and have < ram and E.in_wsl() else ""))
     if why and not binary:
         raise WizardError(409, why + (". The Impulse download comes with its first release; until then, put impulse-server on this "
                                       "computer (or set NEBULA_IMPULSE_BIN) and try again." if pkg == "impulse" else "."))
     if why:
         warn.append(why)
-    from nebula import catalog as C
     lacks = C.fits(m, C.machine())
+    if _is_portable(server, binary):                    # a smaller card is no stop: what does not fit on it stays in RAM
+        lacks = [x for x in lacks if not x.startswith("a graphics card")]
+        warn += _vulkan_fit(server, (m.get("download_gb") or 0) * 1024 or None, a)
     if lacks:
         warn.append("It may not run well here: it wants " + "; ".join(lacks) + ".")
     if m.get("content"):
@@ -207,10 +459,13 @@ def _deploy_catalog(server, job, a: dict, mid: str) -> dict:
     pkg, binary, why = _engine_for(server, a)
     if not binary:
         raise WizardError(409, why or "the engine is not on this computer")
-    files = [m["file"]] + [m[k] for k in ("mtp", "mmproj") if m.get(k) and not (k == "mtp" and m.get("mtp_repo"))]
+    files = [m["file"]] + list(m.get("shards") or []) + [m[k] for k in ("mtp", "mmproj") if m.get(k) and not (k == "mtp" and m.get("mtp_repo"))]
     here = _cached_files(server, m) or {}                          # already in the Hugging Face cache: not downloaded
     missing = [f for f in files if f not in here]
-    paths = job.pull_files(m["repo"], m.get("revision") or "main", missing) if missing else {}
+    sha = m.get("sha256")                                          # one file's, or {file name: sha256} for a split model
+    pins = ({f: sha[os.path.basename(f)] for f in missing if os.path.basename(f) in sha} if isinstance(sha, dict)
+            else {m["file"]: sha}) if sha else None
+    paths = job.pull_files(m["repo"], m.get("revision") or "main", missing, pins) if missing else {}
     if m.get("mtp") and m.get("mtp_repo"):                         # its drafter lives in another repository
         from nebula import hfcache
         got = hfcache.find(server.cfg, m["mtp_repo"], None, m["mtp"])
@@ -222,8 +477,15 @@ def _deploy_catalog(server, job, a: dict, mid: str) -> dict:
         opts["mtp"] = paths[m["mtp"]]
     if m.get("mmproj"):
         opts["mmproj"], opts["mmproj_file"] = True, paths[m["mmproj"]]
-    job.deploy({"name": name, "kind": pkg, "binary": binary, "model": paths[m["file"]], "context": int(m.get("context") or 32768),
-                "slots": 1, "options": opts, **({"cwd": a["cwd"]} if a.get("cwd") else {})})
+    opts.update(m.get("sampling") or {})                           # the model card's sampling (Flint), shown on the Edit form
+    # the cards: the ones the answers name; else a layout of the model's that this machine takes (two cards that hold it
+    # all: everything on them); else the card with the most free memory
+    lay = C.layout(m) if pkg == "impulse" and not a.get("cards") else None
+    if lay:
+        opts.update(lay["options"])
+    card = lay["card"] if lay else _cards_for(a)
+    job.deploy({"name": name, "kind": pkg, **_portable_spec(server, job, pkg, binary, a), "model": paths[m["file"]], "context": int(m.get("context") or 32768),
+                "slots": 1, "options": opts, **({"card": card} if card else {}), **({"cwd": a["cwd"]} if a.get("cwd") else {})})
     return {"model": name, "test": job.test(name)}
 
 
@@ -261,7 +523,7 @@ class FirstRun(Wizard):
 
     def options(self, server, field, a):
         if field == "catalog":
-            return _catalog_options(server, variant=a.get("variant"))
+            return _catalog_options(server, variant=a.get("variant"), ask_repo=False)
         if field == "hfcache":
             return [{"value": "", "label": "none: the model picked above"}] + _cache_options(server)
         if field == "running":
@@ -338,11 +600,17 @@ class DeployOwn(Wizard):
             {"key": "model", "label": "", "type": "cards", "options_from": "catalog"},
             {"key": "cached", "label": "Or one already on this computer (your Hugging Face cache): no download", "type": "select", "options_from": "hfcache"},
             {"key": "advanced", "label": "Advanced: a model from Hugging Face, another engine", "type": "checkbox"}]},
+        {"id": "fn", "title": "Qwen3.8 Flash-Next: which file?", "when": {"model": "qwen38-flashnext", "advanced": False}, "fields": [
+            {"key": "fn_link", "label": "A link to a Hugging Face repository with a Qwen3.8 Flash-Next GGUF file", "type": "text",
+             "placeholder": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF",
+             "help": "Nebula lists its sizes, checks that it is Flash-Next and that it fits this computer before anything downloads."},
+            {"key": "fn_quant", "label": "Size", "type": "select", "options_from": "fn_quant"}]},
         {"id": "link", "title": "Advanced", "when": {"advanced": True}, "fields": [
             {"key": "link", "label": "A Hugging Face link (or a .gguf file, or a Flash-Next pack folder, on this computer)", "type": "text",
              "placeholder": "https://huggingface.co/owner/repo-GGUF"},
             {"key": "quant", "label": "Size", "type": "select", "options_from": "quant"},
             {"key": "package", "label": "Engine", "type": "select", "options_from": "package"},
+            {"key": "vk_card", "label": "Graphics card (without an NVIDIA card: through Vulkan)", "type": "select", "options_from": "vk_card"},
             {"key": "context", "label": "Context (tokens)", "type": "number"},
             {"key": "thinking", "label": "Thinking before answering", "type": "checkbox"}]},
     ]
@@ -359,6 +627,23 @@ class DeployOwn(Wizard):
         if field == "package":
             from nebula import packages as P
             return [{"value": k, "label": v["label"]} for k, v in P.PACKAGES.items()]
+        if field == "vk_card":                               # Impulse portable's cards (no NVIDIA card here)
+            from nebula import catalog as C
+            vk = C.vulkan_cards(server.cfg.base_dir)
+            pick = C.vulkan_pick(vk)
+            return ([{"value": "", "label": f"Nebula's pick: {pick['name']}" if pick else "Nebula's pick"}] +
+                    [{"value": c["name"], "label": f"{c['name']} · {c['free_mb'] / 1024:.1f} GB free"
+                      + (" (the processor's graphics: shares the RAM)" if c.get("integrated") else "")} for c in vk])
+        if field == "fn_quant":                              # the sizes of the repository pasted, and which fit here
+            link = str(a.get("fn_link") or "").strip()
+            if not link:
+                return []
+            from nebula import catalog as C, yard
+            r = _call(server, "/api/yard/hf/resolve", {"url": link})
+            have = C.machine(yard.models_dir(server))
+            return [{"value": c["id"], "label": f"{_size_name(c)} · {_gb(c['size'])}"
+                     + ("" if not _repo_lacks(_repo_needs(c["size"]), have) else " · too big for this computer")}
+                    for c in r.get("choices") or []]
         if field == "quant":
             m = str(a.get("link") or "").strip()
             if not m or os.path.isfile(os.path.expanduser(m)) or os.path.isdir(os.path.expanduser(m)):
@@ -375,33 +660,79 @@ class DeployOwn(Wizard):
             m = C.get(a.get("model") or "", a.get("variant"))
             if m is None:
                 raise WizardError(400, "pick a model")
-            lines, warn = _deploy_lines(server, a, m)
+            if m.get("ask_repo") and not C.impulse_runs_here()[0]:
+                raise WizardError(409, FLASHNEXT_NEEDS)
+            lines, warn = _repo_lines(server, m, a) if m.get("ask_repo") else _deploy_lines(server, a, m)
             return {"lines": lines, "warnings": warn}
         _need(a, "link")
         from nebula import flashnext
         if flashnext.is_pack(os.path.expanduser(str(a["link"]))):
+            if not C.impulse_runs_here()[0]:
+                raise WizardError(409, FLASHNEXT_NEEDS.replace("Qwen3.8 Flash-Next runs", "A Flash-Next pack runs"))
+            if a.get("image"):                                 # the reference engine's way: a container image of its own
+                return {"lines": [f"Use the Flash-Next pack in {a['link']}",
+                                  f"Run it with {flashnext.LABEL} in a sandbox, from the image {a['image']}",
+                                  "Send it a hello to check it answers"],
+                        "warnings": ["the image is built on this computer from impulse/flashnext/nebula-image (its README)"]}
+            from nebula import pieces
+            if pieces.find("impulse-flashnext", server.cfg.base_dir) is None and pieces.pin("impulse-flashnext") is None:
+                raise WizardError(409, pieces.say("impulse-flashnext"))
+            have = pieces.find("impulse-flashnext", server.cfg.base_dir) is not None
             return {"lines": [f"Use the Flash-Next pack in {a['link']}",
-                              f"Run it with {flashnext.LABEL} in a sandbox, from the image {a.get('image') or flashnext.IMAGE}",
+                              f"{flashnext.LABEL}: already on this computer" if have else
+                              pieces.say("impulse-flashnext")[0].upper() + pieces.say("impulse-flashnext")[1:],
+                              "Run it with Impulse " + _fn_placement(server)[0],
                               "Send it a hello to check it answers"],
-                    "warnings": ["the image is built on this computer from impulse/flashnext/nebula-image (its README)"]}
+                    "warnings": _fn_placement(server)[1]}
         local = os.path.isfile(os.path.expanduser(str(a["link"])))
         if not local:
             _need(a, "quant")
         pkg, binary, why = _engine_for(server, a)
         if not binary:
             raise WizardError(409, why or f"{pkg} isn't on this computer")
-        return {"lines": ([f"Use {a['link']}"] if local else [f"Download {a['quant']} from {a['link']}"]) +
-                [f"Run it with {pkg}, context {int(a.get('context') or 8192):,} tokens", "Send it a hello to check it answers"],
-                "warnings": []}
+        warn = []
+        if _is_portable(server, binary):
+            size = None
+            if local:
+                size = os.path.getsize(os.path.expanduser(str(a["link"]))) / 2**20
+            else:
+                r = _call(server, "/api/yard/hf/resolve", {"url": str(a["link"]).strip()})
+                c = next((c for c in r.get("choices") or [] if c["id"] == a["quant"]), None)
+                size = c["size"] / 2**20 if c else None
+            warn = [why] + _vulkan_fit(server, size, a)
+        return {"lines": ([f"Use {a['link']}"] if local else [f"Download {a['quant']} from {a['link']}"]) + _portable_lines(server, binary) +
+                [(_engine_line(server, pkg, binary) if _is_portable(server, binary) else f"Run it with {pkg}")
+                 + f", context {int(a.get('context') or 8192):,} tokens", "Send it a hello to check it answers"],
+                "warnings": warn}
 
     def apply(self, server, a, job):
         if not a.get("advanced") and a.get("cached"):
             return _cached_deploy(server, job, a)
+        from nebula import catalog as C
+        if not a.get("advanced") and _ask_repo(a):
+            if not C.impulse_runs_here()[0]:
+                raise WizardError(409, FLASHNEXT_NEEDS)
+            return _deploy_repo(server, job, a, _ask_repo(a))
         if not a.get("advanced"):
             return _deploy_catalog(server, job, a, a["model"])
         from nebula import flashnext
         pack = flashnext.pack_files(os.path.expanduser(str(a["link"])))
-        if pack is not None:                                   # a Flash-Next pack: Impulse Flash-Next, from its image
+        if pack is not None and not a.get("image") and not C.impulse_runs_here()[0]:
+            raise WizardError(409, FLASHNEXT_NEEDS.replace("Qwen3.8 Flash-Next runs", "A Flash-Next pack runs"))
+        if pack is not None and not a.get("image"):            # a Flash-Next pack on Impulse: impulse-fx is a piece of its own
+            from nebula import pieces
+            if pieces.find("impulse-flashnext", server.cfg.base_dir) is None:
+                job.say(pieces.say("impulse-flashnext"), "running")
+                pieces.fetch("impulse-flashnext", server.cfg.base_dir,
+                             lambda got, total: job.steps[-1].__setitem__("progress", [got, total]))
+                job.steps[-1]["state"] = "done"
+            name = a.get("name") or _free_name(server, os.path.basename(pack["dir"].rstrip("/"))[:24])
+            card = _cards_for(a)
+            job.deploy({"name": name, "kind": "impulse", "model": pack["dir"], "context": int(a.get("context") or 32768),
+                        "slots": 1, "options": {}, **({"card": card} if card else {}),
+                        **({"where": "local"} if flashnext.PLACEMENT == "local" else {})})
+            return {"model": name, "test": job.test(name)}
+        if pack is not None:                                   # with an image: the reference engine's way
             from nebula import yard
             name = a.get("name") or _free_name(server, os.path.basename(pack["dir"].rstrip("/"))[:24])
             spec = flashnext.engine_spec(name, machine=a.get("machine"), folder=os.path.dirname(pack["dir"].rstrip("/")),
@@ -414,8 +745,9 @@ class DeployOwn(Wizard):
         if not os.path.isfile(path):
             path, _mm = job.pull(a["link"], a["quant"])
         pkg, binary, _why = _engine_for(server, a)
-        job.deploy({"name": name, "kind": pkg, "binary": binary, "model": path, "context": int(a.get("context") or 8192),
-                    "slots": 1, "options": {"thinking": bool(a.get("thinking"))}, **({"cwd": a["cwd"]} if a.get("cwd") else {})})
+        card = _cards_for(a)
+        job.deploy({"name": name, "kind": pkg, **_portable_spec(server, job, pkg, binary, a), "model": path, "context": int(a.get("context") or 8192),
+                    "slots": 1, **({"card": card} if card else {}), "options": {"thinking": bool(a.get("thinking"))}, **({"cwd": a["cwd"]} if a.get("cwd") else {})})
         return {"model": name, "test": job.test(name)}
 
 
@@ -641,7 +973,7 @@ class ShareFriend(Wizard):
         inv = job.do("make the invite", "/api/yard/node/invite", {"kind": "friend", "for": a["friend"], "grants": a["models"],
                                                                    "confirm": a.get("confirm") or []})
         job.undos.append(("/api/yard/node/invites/" + inv["id"] + "/cancel", {}, f"cancel the invite for {a['friend']}"))
-        return {"invite": inv["invite"], "note": inv["note"], "expires_in_s": inv["expires_in_s"]}
+        return {"invite": inv["invite"], "note": inv["note"], "reach": inv.get("reach"), "reach_note": inv.get("reach_note"), "expires_in_s": inv["expires_in_s"]}
 
 
 class Gateway(Wizard):
@@ -935,7 +1267,7 @@ class Job:
             if st is None or st.get("state") == "done":
                 break
             if st.get("state") in ("failed", "error", "paused", "cancelled"):
-                raise WizardError(502, f"the download stopped: {st.get('error') or st.get('state')}")
+                raise WizardError(502, "the download stopped: " + (st.get("error") or next((f.get("error") for f in st.get("files") or [] if f.get("error")), None) or st.get("state")))
             self.steps[-1]["progress"] = [st.get("bytes"), st.get("total")]
             time.sleep(0.5)
         self.undos.pop()                                    # finished: the file is kept (it is yours; Undo leaves it)
@@ -944,13 +1276,19 @@ class Job:
         mm = targets.get(os.path.basename(r["mmproj"])) if mmproj and r.get("mmproj") else None
         return model, mm
 
-    def pull_files(self, repo: str, revision: str, files: list[str]) -> dict:
-        """Named files from a Hugging Face repository (at a pinned revision), waited for: {file: its path here}."""
+    def pull_files(self, repo: str, revision: str, files: list[str], pins: dict | None = None) -> dict:
+        """Named files from a Hugging Face repository (at a pinned revision), waited for: {file: its path here}. `pins`
+        ({file: sha256}, the catalog's): a file whose LFS sha256 on the Hub is another is refused before the download."""
         r = _call(self.server, "/api/yard/hf/resolve", {"url": f"https://huggingface.co/{repo}" + (f"/tree/{revision}" if revision and revision != "main" else "")})
         meta = [f for f in r.get("files") or [] if f["path"] in files]
         missing = [f for f in files if f not in {m["path"] for m in meta}]
         if missing:
             raise WizardError(404, f"{repo} no longer has {missing[0]}")
+        for f in meta:
+            want = (pins or {}).get(f["path"])
+            if want and f.get("sha256") != want:
+                raise WizardError(409, f"{repo}'s {f['path']} is not the file the catalog names (sha256 {str(f.get('sha256'))[:12]}…, "
+                                       f"the catalog's {want[:12]}…)")
         gb = sum(m.get("size") or 0 for m in meta) / 1e9
         pull = self.do(f"download {gb:.1f} GB from {repo.split('/')[-1]}", "/api/yard/hf/pull",
                        {"repo": repo, "revision": revision or "main", "files": files, "meta": meta})
@@ -966,7 +1304,7 @@ class Job:
             if st is None or st.get("state") == "done":
                 break
             if st.get("state") in ("failed", "error", "paused", "cancelled"):
-                raise WizardError(502, f"the download stopped: {st.get('error') or st.get('state')}")
+                raise WizardError(502, "the download stopped: " + (st.get("error") or next((f.get("error") for f in st.get("files") or [] if f.get("error")), None) or st.get("state")))
             self.steps[-1]["progress"] = [st.get("bytes"), st.get("total")]
             time.sleep(0.5)
         self.undos.pop()                                    # finished: the files are kept (Undo leaves them)
@@ -990,9 +1328,11 @@ class Job:
                       caller={"id": None, "label": "wizard/test", "guest": False}, registry=srv.registry, admission=srv.admission,
                       lot=srv.lot, policy=srv.policy, yard=srv.yard, power=srv.power, slots=srv.slots, seclog=srv.seclog, guard=srv.guard, otel=srv.otel)
         try:
-            r = chat(srv.engine, ctx, {"model": model, "stream": False, "max_tokens": 64,
+            # room for a model that thinks before it answers (Flint decides by itself; 64 tokens were all thinking)
+            r = chat(srv.engine, ctx, {"model": model, "stream": False, "max_tokens": 1024,
                                        "messages": [{"role": "user", "content": "Say hello to me in one short sentence."}]})
-            text = ((r.body.get("choices") or [{}])[0].get("message") or {}).get("content") if isinstance(r, JsonReply) else None
+            msg = ((r.body.get("choices") or [{}])[0].get("message") or {}) if isinstance(r, JsonReply) else {}
+            text = msg.get("content") or ("(thinking) " + msg["reasoning_content"][-200:] if msg.get("reasoning_content") else None)
             self.steps[-1]["state"] = "done"
             return {"ok": bool(text), "reply": (text or "")[:400]}
         except Exception as e:  # noqa: BLE001 - the model is added; the test says what went wrong

@@ -132,6 +132,95 @@ class FitTest(unittest.TestCase):
             del os.environ["NEBULA_FAKE_CARDS"]
 
 
+def make_flint_gguf(path, experts_mb=12, other_mb=2):
+    """A small `flint` GGUF: its hparams, and tensors whose offsets give the routed experts' and the other weights' bytes."""
+    def s(x):
+        b = x.encode()
+        return struct.pack("<Q", len(b)) + b
+    u = lambda k, v: (f"flint.{k}", 4, struct.pack("<I", v))
+    kv = [("general.architecture", 8, s("flint")), ("general.alignment", 4, struct.pack("<I", 32)),
+          u("block_count", 4), u("attention.head_count", 32), u("attention.head_count_kv", 4), u("attention.key_length", 128),
+          u("attention.value_length", 128), u("embedding_length", 2048), u("expert_count", 8),
+          ("flint.attention.sliding_window_pattern", 9, struct.pack("<IQ", 7, 4) + bytes([0, 0, 1, 1]))]
+    MB = 2**20
+    tensors = [("token_embd.weight", other_mb // 2 * MB), ("blk.2.ffn_up_exps.weight", experts_mb // 2 * MB),
+               ("blk.3.ffn_up_exps.weight", experts_mb // 2 * MB), ("output.weight", other_mb // 2 * MB)]
+    body = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(kv))
+    for k, t, v in kv:
+        body += s(k) + struct.pack("<I", t) + v
+    off = 0
+    for name, size in tensors:
+        body += s(name) + struct.pack("<I", 1) + struct.pack("<Q", size) + struct.pack("<I", 0) + struct.pack("<Q", off)
+        off += size
+    body += b"\0" * ((-len(body)) % 32)
+    with open(path, "wb") as f:
+        f.write(body)
+        f.write(b"\0" * off)
+
+
+class FlintFitTest(unittest.TestCase):
+    """Flint on Impulse: the card holds what is not a routed expert, the KV cache and the smallest expert cache; RAM holds
+    the experts. A start is refused (fits False, a plain reason) when either is short, before anything loads."""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.m = os.path.join(self.tmp, "flint.gguf")
+        make_flint_gguf(self.m)
+        self.card = {"uuid": "a", "index": 0, "memory_mb": 8192, "used_mb": 0}
+
+    def tearDown(self):
+        os.environ.pop("NEBULA_FAKE_RAM_FREE_MB", None)
+
+    def spec(self, **kw):
+        return {"name": "f", "kind": "impulse", "model": self.m, "context": 8192, "slots": 1, **kw}
+
+    def test_the_file_splits_into_experts_and_the_rest(self):
+        tb = E.gguf_tensor_bytes(self.m)
+        self.assertEqual((tb["experts"], tb["other"], tb["expert_layers"]), (12 * 2**20, 2 * 2**20, 2))
+
+    def test_one_card_and_the_experts_in_ram(self):
+        os.environ["NEBULA_FAKE_RAM_FREE_MB"] = "64000"
+        f = E.fit(self.spec(), None, [self.card])
+        kv = round(4 * 4 * 128 * 2 * E.CACHE_BYTES["q4_0"] * 8192 / 2**20)          # every layer, q4_0 (Impulse's default)
+        self.assertEqual((f["fits"], f["kv_mb"], f["weights_mb"], f["ram_need_mb"]), (True, kv, 2, 12 + E.RAM_OVERHEAD_MB + 2 * kv))
+        self.assertEqual(f["card"], "a")                                                # no card chosen: the one with the most free
+        self.assertGreater(f["expert_cache_mb"], 7000)
+        self.assertEqual(f["expert_cache_share"], 1.0)
+
+    def test_short_ram_is_refused_with_a_plain_reason(self):
+        os.environ["NEBULA_FAKE_RAM_FREE_MB"] = "2048"
+        f = E.fit(self.spec(), None, [self.card])
+        self.assertFalse(f["fits"])
+        self.assertIn("GB of free RAM for its experts", f["why"])
+
+    def test_short_ram_under_wsl_says_how_to_raise_it(self):
+        os.environ["NEBULA_FAKE_RAM_FREE_MB"] = "2048"
+        os.environ["NEBULA_FAKE_WSL"] = "1"
+        try:
+            f = E.fit(self.spec(), None, [self.card])
+        finally:
+            os.environ.pop("NEBULA_FAKE_WSL")
+        self.assertFalse(f["fits"])
+        for w in ("free RAM for its experts", "WSL", "memory=", ".wslconfig", "wsl --shutdown"):
+            self.assertIn(w, f["why"])
+        os.environ["NEBULA_FAKE_WSL"] = "0"
+        try:
+            self.assertNotIn("wslconfig", E.fit(self.spec(), None, [self.card])["why"])
+        finally:
+            os.environ.pop("NEBULA_FAKE_WSL")
+
+    def test_a_small_card_or_a_long_context_is_refused(self):
+        os.environ["NEBULA_FAKE_RAM_FREE_MB"] = "64000"
+        f = E.fit(self.spec(context=262144), None, [dict(self.card, memory_mb=1024)])
+        self.assertFalse(f["fits"])
+        self.assertIn("KV cache", f["why"])
+
+    def test_all_on_two_cards_needs_no_ram_for_experts(self):
+        os.environ["NEBULA_FAKE_RAM_FREE_MB"] = "100"
+        f = E.fit(self.spec(card="a,b", options={"n_cpu_moe": 0, "tensor_split": "16,12"}), None,
+                  [self.card, {"uuid": "b", "index": 1, "memory_mb": 12288, "used_mb": 0}])
+        self.assertEqual((f["fits"], f["ram_need_mb"], f["weights_mb"]), (True, 2 * f["kv_mb"], 14))
+
+
 class LifecycleTest(unittest.TestCase):
     """A Nebula with two managed engines (the pretend Impulse binary) and a config file."""
 

@@ -248,13 +248,19 @@ Everything builds locally with Docker; nothing here uses GitHub's minutes.
    `IMPULSE_FLASHNEXT` adds impulse-fx and the Flash-Next engine library), then, in the same Ubuntu 22.04 container (so
    the libgomp it copies needs no newer glibc), `python3 greenfield/impulse_dist.py --platform linux --build <build>
    --cuda <cuda> --out <impulse-dist> --require-fx`.
-3. **llama-server** for Halo's fallback: `greenfield/halo_server_build.sh` in a clean Ubuntu 22.04 container.
+3. **Impulse portable** (Halo without an NVIDIA card: CPU + Vulkan; not in the installers, a release file Nebula
+   downloads on such a machine): `greenfield/impulse_portable_build.sh` in a clean Ubuntu 22.04 container with
+   LunarG's Vulkan SDK; attach `impulse-portable-<version>-linux-x86_64.tar.gz` to the release and put its sha256 and
+   size in `nebula/catalog/pieces.json`. `package.py` writes the other piece itself, Impulse Flash-Next
+   (`impulse-flashnext-<version>-<platform>`: impulse-fx and its engine library, left out of the installers), and
+   the small update (`nebula-eh-<version>-app-<platform>-x86_64.tar.gz`); attach those too, and put the pieces'
+   sha256 and size in `pieces.json` before the build that ships them.
 4. **The network's node programs** (NVIDIA Personal-AI-Router's services): clone it and run `services/build.sh` in a `golang:1.25` container
    with `CGO_ENABLED=0 GOFLAGS=-buildvcs=false`.
 5. **The installer**:
 
    ```bash
-   python3 greenfield/package.py --platform linux --impulse <impulse-dist> --halo-server <llama.cpp build>/bin \
+   python3 greenfield/package.py --platform linux --impulse <impulse-dist> \
      --pair-bin <pair>/services/build/bin --pair-src <pair> --out dist
    ```
 

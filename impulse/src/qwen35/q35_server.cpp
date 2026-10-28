@@ -29,6 +29,7 @@ extern "C" int stbi_info_from_memory(const unsigned char * buffer, int len, int 
 #include "server-common.h"
 #include "server-schema.h"
 #include "server-task.h"
+#include "../lite/stream_out.hpp"
 
 #include "build-info.h"
 #include "chat.h"
@@ -120,7 +121,7 @@ int run(int argc, char ** argv) {
     A.eo.adapt = true; A.eo.async_swaps = true; A.eo.overlap = true; A.eo.prefill_ubatch = -1; A.eo.lend = true;
     A.eo.kv_initial = 32768;   // the KV pager: 32k cells on the card at load, grown as the conversation needs (0 = all at load)
     A.eo.type_k = GGML_TYPE_Q4_0; A.eo.type_v = GGML_TYPE_Q4_0;
-    bool ctx_set = false, ckpt_set = false, k_set = false, v_set = false, temp_set = false, topk_set = false, repeat_set = false;
+    bool ctx_set = false, ckpt_set = false, k_set = false, v_set = false, temp_set = false, topk_set = false, repeat_set = false, topp_set = false, minp_set = false, ncpumoe_set = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto nx = [&]() { if (i + 1 >= argc) { usage(); exit(2); } return std::string(argv[++i]); };
@@ -146,8 +147,8 @@ int run(int argc, char ** argv) {
         else if (a == "-ub" || a == "--ubatch-size") A.eo.n_ubatch = std::stoi(nx());
         else if (a == "--temp") { P.sampling.temp = std::stof(nx()); temp_set = true; }
         else if (a == "--top-k") { P.sampling.top_k = std::stoi(nx()); topk_set = true; }
-        else if (a == "--top-p") P.sampling.top_p = std::stof(nx());
-        else if (a == "--min-p") P.sampling.min_p = std::stof(nx());
+        else if (a == "--top-p") { P.sampling.top_p = std::stof(nx()); topp_set = true; }
+        else if (a == "--min-p") { P.sampling.min_p = std::stof(nx()); minp_set = true; }
         else if (a == "--repeat-penalty") { P.sampling.penalty_repeat = std::stof(nx()); repeat_set = true; }
         else if (a == "--image-max-tokens") A.image_max_tokens = std::stoi(nx());
         else if (a == "--mmproj-place") A.mmproj_place = nx();
@@ -155,7 +156,7 @@ int run(int argc, char ** argv) {
         else if (a == "--mmproj-min-size") A.mmproj_min_size = std::stoi(nx());   // px: smaller images encode on the CPU (auto)
         else if (a == "--mmproj-gpu-max-ctx") A.mmproj_gpu_max_ctx = std::stoi(nx());
         else if (a == "-t" || a == "--threads") A.threads = std::stoi(nx());
-        else if (a == "--n-cpu-moe") A.eo.n_cpu_moe = std::stoi(nx());
+        else if (a == "--n-cpu-moe") { A.eo.n_cpu_moe = std::stoi(nx()); ncpumoe_set = true; }
         else if (a == "--tensor-split" || a == "-ts") A.eo.tensor_split = parse_split(nx());   // several GPUs (dense models)
         else if (a == "--read-interleave") {
             A.read_interleave = std::stoi(nx());
@@ -230,6 +231,18 @@ int run(int argc, char ** argv) {
         if (!temp_set) P.sampling.temp = 0.1f;
         if (!topk_set) P.sampling.top_k = 50;
         if (!repeat_set) P.sampling.penalty_repeat = 1.05f;
+    }
+    const bool flint = std::string(architecture) == "flint";
+    if (flint) {   // text only, no MTP head; the model card's sampling (temperature 1, top-p 0.95, top-k 20, min-p 0)
+        if (!A.mtp.empty() || !A.mmproj.empty()) { fprintf(stderr, "Flint is text-only and has no MTP head\n"); llama_model_free(model); return 2; }
+        if (!temp_set) P.sampling.temp = 1.0f;
+        if (!topk_set) P.sampling.top_k = 20;
+        if (!topp_set) P.sampling.top_p = 0.95f;
+        if (!minp_set) P.sampling.min_p = 0.0f;
+        if (!ncpumoe_set) {   // every layer's experts in RAM, the cache in front of them (49 blocks: the default 40 would leave 9 whole)
+            char blocks[32] = {};
+            if (llama_model_meta_val_str(model, "flint.block_count", blocks, sizeof(blocks)) > 0) A.eo.n_cpu_moe = std::atoi(blocks);
+        }
     }
     P.n_ctx = A.eo.n_ctx;
     const llama_vocab * vocab = llama_model_get_vocab(model);
@@ -400,7 +413,8 @@ int run(int argc, char ** argv) {
     static const bool probes = timeline && atoi(getenv("IMPULSE_TIMELINE")) >= 2;   // and: the sampler a second time on the
     // same logits, a read pass over the logits, a write pass over 1.5 MB (is the core slow, or the call?); the second sample
     // advances a sampled request's RNG, so only for measuring
-    struct Job { json body; bool chat_api = false; std::promise<std::pair<int, json>> done; };
+    struct Job { json body; bool chat_api = false; std::promise<std::pair<int, json>> done;
+                 std::shared_ptr<lite::StreamChan> chan; };   // chan: stream: true (src/lite/stream_out.hpp)
     struct Slot {
         int id = 0;
         server_tokens cached;             // the slot's prompt cache: what its sequence holds (prompt + generated)
@@ -408,6 +422,7 @@ int run(int argc, char ** argv) {
         std::atomic<bool> active{ false };
         task_params tp; common_sampler * smpl = nullptr; server_slot_stats stats;
         std::string text, stopping_word; llama_tokens out; stop_type stop = STOP_TYPE_NONE;
+        std::unique_ptr<task_result_state> sst; size_t n_sent = 0;   // a streamed answer: its parser state, the text sent
         int n_predict = 0, n_prompt = 0; size_t keep = 0; llama_token tok = 0; bool go = false;
         std::vector<float> lg;
         int64_t t_last = 0;               // when its last request finished (the least recently used idle slot takes a new one)
@@ -687,6 +702,7 @@ int run(int argc, char ** argv) {
         return json();
     };
     auto emit = [&](Slot & S, llama_token t) -> bool {   // false = stop here
+        if (S.sst && S.job->chan->cancelled) { S.stop = STOP_TYPE_LIMIT; return false; }   // the streaming client went away
         S.out.push_back(t); S.stats.n_gen++;
         if (llama_vocab_is_eog(vocab, t)) { S.stop = STOP_TYPE_EOS; return false; }
         // Match llama-server: parser-required markers survive even when ordinary special tokens are hidden.
@@ -697,6 +713,9 @@ int run(int argc, char ** argv) {
             if (!w.empty() && p != std::string::npos) { S.text.resize(p); S.stop = STOP_TYPE_WORD; S.stopping_word = w; return false; }
         }
         if ((int) S.out.size() >= S.n_predict || eng.n_past(S.id) + 2 >= n_ctx_slot) { S.stop = STOP_TYPE_LIMIT; return false; }
+        if (S.sst)   // stream: this token's text as llama-server's partial result (held back while it may be a stop word)
+            S.job->chan->push(lite::stream_partial(*S.sst, S.tp, lite::stream_take(S.text, S.n_sent, S.tp.antiprompt, false), t,
+                                                   S.stats.n_gen, S.n_prompt, (int) S.keep));
         return true;
     };
     auto finish = [&](Slot & S, const std::string & err) {   // the answer (or the error) to the waiting request; the slot is idle
@@ -736,6 +755,7 @@ int run(int argc, char ** argv) {
                             (double) S.stats.n_draft_tokens, (double) S.stats.n_draft_accepted, (double) S.stats.n_draft_verif_steps, (double) eng.n_past(S.id));
             server_task_result_cmpl_final res;
             res.content = lite::utf8_clean(S.text);   // valid UTF-8 for the chat parser below (src/lite/utf8.hpp: it was a 500)
+            if (S.sst) { res.content = lite::utf8_clean(lite::stream_take(S.text, S.n_sent, S.tp.antiprompt, true)); res.tokens.clear(); }
             res.tokens = S.out; res.stream = S.tp.stream; res.include_usage = S.tp.include_usage; res.stats = S.stats;
             res.truncated = false; res.n_decoded = (int32_t) S.out.size(); res.n_prompt_tokens = S.n_prompt;
             res.n_prompt_tokens_cache = (int32_t) S.keep; res.n_tokens_cached = eng.n_past(S.id); res.has_new_line = false;
@@ -743,9 +763,14 @@ int run(int argc, char ** argv) {
             res.generation_params = S.tp; res.verbose = false; res.res_type = S.tp.res_type;
             res.oaicompat_model = S.tp.oaicompat_model; res.oaicompat_cmpl_id = S.tp.oaicompat_cmpl_id;
             task_result_state state(S.tp.chat_parser_params);
-            res.update(state);
+            res.update(S.sst ? *S.sst : state);   // stream: the request's own state, after its partial results
             outj = res.to_json();
         }
+        if (S.job->chan) {   // stream: the final events (or the error), then the end
+            S.job->chan->push(code == 200 ? outj : json{ { "error", outj } });
+            S.job->chan->close();
+        }
+        S.sst.reset();
         S.job->done.set_value({ code, outj });
         S.job.reset(); S.active = false;
         S.t_last = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -884,8 +909,10 @@ int run(int argc, char ** argv) {
         catch (const std::exception & e) { code = 500; r = format_error_response(e.what(), ERROR_TYPE_SERVER); }
         if (code != 200) {
             if (best->smpl) { common_sampler_free(best->smpl); best->smpl = nullptr; }
+            if (best->job->chan) { best->job->chan->close(); }
             best->job->done.set_value({ code, r }); best->job.reset(); best->active = false;
         } else {
+            if (best->job->chan && best->tp.stream) { best->sst = std::make_unique<task_result_state>(best->tp.chat_parser_params); best->n_sent = 0; }
             best->go = emit(*best, best->tok);
             if (!best->go) finish(*best, "");
         }
@@ -966,7 +993,7 @@ int run(int argc, char ** argv) {
             { "bos_token", llama_vocab_bos(vocab) != LLAMA_TOKEN_NULL ? common_token_to_piece(vocab, llama_vocab_bos(vocab), true) : std::string() },
             { "eos_token", llama_vocab_eos(vocab) != LLAMA_TOKEN_NULL ? common_token_to_piece(vocab, llama_vocab_eos(vocab), true) : std::string() },
             { "ui", false }, { "cors_proxy_enabled", false },
-            { "build_info", std::string(lfm2 ? "impulse " IMPULSE_VERSION_STR " (lfm2moe engine) / " : "impulse " IMPULSE_VERSION_STR " (qwen35 engine) / ") + llama_build_info() }, { "is_sleeping", false },
+            { "build_info", std::string(lfm2 ? "impulse " IMPULSE_VERSION_STR " (lfm2moe engine) / " : flint ? "impulse " IMPULSE_VERSION_STR " (flint engine) / " : "impulse " IMPULSE_VERSION_STR " (qwen35 engine) / ") + llama_build_info() }, { "is_sleeping", false },
             { "impulse", json{ { "slots", eng.slots() }, { "arena_shrinks", eng.stats().arena_shrinks }, { "graphs_built", eng.stats().graphs_built }, { "graphs_reused", eng.stats().graphs_reused },
                               { "timeline", json{ { "ubatches", eng.stats().t_ubatches }, { "build_ms", eng.stats().t_build }, { "inputs_ms", eng.stats().t_inputs },
                                                   { "compute_ms", eng.stats().t_compute }, { "readout_ms", eng.stats().t_readout } } }, { "n_cpu_moe", A.eo.n_cpu_moe },
@@ -978,7 +1005,7 @@ int run(int argc, char ** argv) {
                               { "adapt", A.eo.adapt }, { "adapt_half_life", A.eo.adapt_half_life }, { "adapt_budget", A.eo.adapt_budget },
                               { "adapt_refill", A.eo.adapt_refill }, { "async_swaps", eng.async_swaps() }, { "ram_locked_gb", eng.ram_locked() / 1e9 }, { "ram_experts_gb", eng.ram_experts() / 1e9 }, { "overlap", A.eo.overlap },
                               { "threads", A.threads }, { "pool_threads", A.eo.pool_threads }, { "n_draft", A.n_draft }, { "spec_min_p", A.spec_min_p },
-                              { "mtp_head", A.mtp_own_head ? "drafter" : "target" }, { "engine", lfm2 ? "lfm2moe" : "qwen35" },
+                              { "mtp_head", A.mtp_own_head ? "drafter" : "target" }, { "engine", lfm2 ? "lfm2moe" : flint ? "flint" : "qwen35" },
                               { "lora", eng.lora_count() == 0 ? json(nullptr) : lora_props() } } },
         };
         send_json(r, props, 200);
@@ -997,11 +1024,46 @@ int run(int argc, char ** argv) {
         }
         auto job = std::make_unique<Job>();
         job->body = body; job->chat_api = chat_api;
+        const bool want_stream = body.contains("stream") && body.at("stream").is_boolean() && body.at("stream").get<bool>();
+        std::shared_ptr<lite::StreamChan> chan;
+        if (want_stream) { chan = std::make_shared<lite::StreamChan>(); job->chan = chan; }
         auto fut = job->done.get_future();
         { std::lock_guard<std::mutex> ql(qmu); queue.push_back(std::move(job)); }
         qcv.notify_one();
+        if (chan) {   // stream: the events as the scheduler makes them (src/lite/stream_out.hpp); an error before any token as JSON
+            {
+                std::unique_lock<std::mutex> l(chan->mu);
+                chan->cv.wait(l, [&] { return !chan->events.empty() || chan->closed; });
+                if (chan->events.empty()) {
+                    l.unlock();
+                    auto [code, out] = fut.get();
+                    send_json(r, code == 200 ? out : json{ { "error", out } }, code);
+                    return;
+                }
+            }
+            r.status = 200;
+            r.set_chunked_content_provider("text/event-stream", [chan](size_t, httplib::DataSink & sink) {
+                std::deque<json> evs; bool closed;
+                {
+                    std::unique_lock<std::mutex> l(chan->mu);
+                    chan->cv.wait(l, [&] { return !chan->events.empty() || chan->closed; });
+                    evs.swap(chan->events); closed = chan->closed;
+                }
+                for (const auto & ev : evs) {
+                    const std::string sse = format_oai_sse(ev);
+                    if (!sink.write(sse.data(), sse.size())) { chan->cancelled = true; return false; }
+                }
+                if (closed) {
+                    static const std::string done = "data: [DONE]\n\n";
+                    sink.write(done.data(), done.size());
+                    sink.done();
+                }
+                return true;
+            }, [chan](bool ok) { if (!ok) chan->cancelled = true; });
+            return;
+        }
         auto [code, out] = fut.get();
-        if (code == 200 && out.is_array()) {   // stream: the whole answer as one SSE burst (no the reference server client streams)
+        if (code == 200 && out.is_array()) {   // (a stream is answered above; this is the old burst, kept for safety)
             std::string sse;
             for (const auto & ev : out) sse += format_oai_sse(ev);
             sse += "data: [DONE]\n\n";

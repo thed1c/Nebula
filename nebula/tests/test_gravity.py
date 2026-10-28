@@ -91,6 +91,29 @@ class GravityTest(unittest.TestCase):
         self.assertIn("gravity.refused", [k for k, _ in kinds])                              # the used invite, again
         self.assertTrue(self.a.seclog.verify()["ok"])
 
+    def test_a_stale_address_is_replaced_by_the_one_the_peer_says_now(self):
+        """BUGS #3: addresses were frozen at invite time. Each look says where each side is now, and both keep that."""
+        _inv, a_id, b_id = self.friends()
+        self.a.gravity.peer(b_id)["addr"] = {"id": b_id, "relay": None, "direct": ["127.0.0.1:9"]}   # bob "moved": alice's copy is stale
+        self.b.gravity.peer(a_id)["addr"] = {**self.a.gravity.addr(), "relay": "https://old-relay.example"}  # and bob's of alice
+        self.b.gravity.conns.clear()
+        self.assertTrue(self.b.gravity.look(a_id)["reachable"])
+        self.assertEqual(self.a.gravity.peer(b_id)["addr"], self.b.gravity.addr())           # alice now has bob's current address
+        self.assertEqual(self.b.gravity.peer(a_id)["addr"], self.a.gravity.addr())
+        again = Config.from_args(["--config", self.a.cfg.path])                              # and it is saved
+        self.assertEqual(next(p for p in again.raw["gravity"]["peers"] if p["id"] == b_id)["addr"], self.b.gravity.addr())
+        self.assertFalse(self.a.gravity.fresh_addr(b_id, {"id": "someone-else", "direct": []}))   # only its own id's
+        self.assertFalse(self.a.gravity.fresh_addr(b_id, {"id": b_id, "direct": "1.2.3.4:5"}))
+
+    def test_the_invite_says_how_a_friend_gets_here(self):
+        r = call(self.abase, "/api/yard/node/invite", {"kind": "friend"})[1]
+        self.assertEqual(r["reach"], "lan")
+        self.assertIn("works only on your own network", r["note"])
+        call(self.abase, "/api/yard/node/public-relay", {"on": True})
+        r = call(self.abase, "/api/yard/node/invite", {"kind": "friend"})[1]
+        self.assertEqual(r["reach"], "public")
+        self.assertIn('must also turn on "Use the public relay"', r["note"])
+
     def test_a_member_sees_every_model_with_no_route_to_the_ones_not_shared(self):
         """They would see them, just with "no route". Cloud models stay Anti-Gravity: never listed."""
         _inv, a_id, b_id = self.friends()

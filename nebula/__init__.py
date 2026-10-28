@@ -3,4 +3,4 @@
 Step 1, the gateway: OpenAI Chat Completions, Anthropic Messages and OpenAI Responses in; the engine's own
 /v1/chat/completions out. Nothing here imports from strata/ or lite/; the engine is an address.
 """
-__version__ = "0.1.3.1"
+__version__ = "0.1.4"

@@ -8,6 +8,7 @@
     python3 greenfield/sign_feed.py --version 0.1.3 --notes "What changed, in plain words" \\
             --file linux-x86_64=dist/nebula-eh-0.1.3-linux-x86_64.run=https://github.com/thed1c/Nebula/releases/download/v0.1.3/nebula-eh-0.1.3-linux-x86_64.run \\
             --file windows-x86_64=dist/Nebula-EH-Setup-0.1.3.exe=https://github.com/.../Nebula-EH-Setup-0.1.3.exe \\
+            [--app linux-x86_64=dist/nebula-eh-0.1.4.1-app-linux-x86_64.tar.gz=https://.../nebula-eh-0.1.4.1-app-linux-x86_64.tar.gz=0.1.4] \\
             --out feed/
         latest.json (each file's sha256 read from the file itself) and latest.json.sig beside it, ready to commit to the
         feed repository.
@@ -68,7 +69,7 @@ def sha256(p: Path) -> str:
     return h.hexdigest()
 
 
-def build(version: str, notes: str, files: list[str], page: str | None) -> bytes:
+def build(version: str, notes: str, files: list[str], page: str | None, apps: list[str] = ()) -> bytes:
     updates.version_tuple(version)
     out = {}
     for spec in files:
@@ -76,6 +77,18 @@ def build(version: str, notes: str, files: list[str], page: str | None) -> bytes
         if not url.startswith("https://"):
             raise SystemExit(f"{plat}: the url is https")
         out[plat] = {"url": url, "sha256": sha256(Path(local))}
+    for spec in apps:                          # a small update: PLATFORM=LOCAL=URL=BASE[,BASE...] (installers it fits on)
+        plat, local, url, bases = spec.split("=", 3)
+        if plat not in out:
+            raise SystemExit(f"{plat}: a small update needs the platform's installer (--file) beside it")
+        if not url.startswith("https://"):
+            raise SystemExit(f"{plat}: the url is https")
+        bases = [b.strip().lstrip("v") for b in bases.split(",") if b.strip()]
+        for b in bases:
+            updates.version_tuple(b)
+        if not bases:
+            raise SystemExit(f"{plat}: a small update names the installers it fits on")
+        out[plat]["app"] = {"url": url, "sha256": sha256(Path(local)), "bytes": Path(local).stat().st_size, "bases": bases}
     feed = {"version": version.lstrip("v"), "notes": notes, "published": datetime.date.today().isoformat(), "files": out,
             "release_page": page or f"https://github.com/thed1c/Nebula/releases/tag/v{version.lstrip('v')}"}
     return (json.dumps(feed, indent=1) + "\n").encode()
@@ -89,6 +102,9 @@ def main(argv=None) -> int:
     ap.add_argument("--version")
     ap.add_argument("--notes", default="")
     ap.add_argument("--file", action="append", default=[], help="PLATFORM=LOCAL_FILE=URL (linux-x86_64, windows-x86_64)")
+    ap.add_argument("--app", action="append", default=[],
+                    help="a small update: PLATFORM=LOCAL_FILE=URL=BASES (the installers' versions it fits on, comma separated; "
+                         "only when Impulse and the rest beside Nebula did not change since those)")
     ap.add_argument("--release-page")
     ap.add_argument("--out", type=Path, default=Path("."))
     a = ap.parse_args(argv)
@@ -103,7 +119,7 @@ def main(argv=None) -> int:
         ap.error("--version is needed to sign a feed")
     if updates.public_of(seed).hex() != updates.PUBLIC_KEY:
         raise SystemExit("this key is not the one nebula/updates.py trusts (PUBLIC_KEY): refused")
-    body = build(a.version, a.notes, a.file, a.release_page)
+    body = build(a.version, a.notes, a.file, a.release_page, a.app)
     sig = sign(seed, body)
     assert updates.verify(updates.public_of(seed), body, sig)
     a.out.mkdir(parents=True, exist_ok=True)

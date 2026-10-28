@@ -362,3 +362,127 @@ class PinnedPrereqsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def app_feed(bases=("0.1.4",), app_url="https://example.invalid/nebula-app.tar.gz") -> bytes:
+    plat = U.platform_key() or "linux-x86_64"
+    body = json.loads(feed())
+    body["files"][plat]["app"] = {"url": app_url, "sha256": "cd" * 32, "bytes": 23 * 2**20, "bases": list(bases)}
+    return json.dumps(body).encode()
+
+
+class SmallUpdateTest(unittest.TestCase):
+    """The owner's "small updates" (2026-10-27): Nebula's code alone when nothing beside it changed, only for an install
+    made by one of the update's base installers; any other gets the whole installer."""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.tmp, "app"))
+        self.key = mock.patch.object(U, "PUBLIC_KEY", PUB)
+        self.key.start()
+        self.env = mock.patch.dict(os.environ, {"NEBULA_UPDATES_FEED": ""})
+        self.env.start()
+
+    def tearDown(self):
+        self.key.stop()
+        self.env.stop()
+
+    def installed_by(self, base):
+        Path(self.tmp, "app", "install.json").write_text(json.dumps({"base": base, "version": base, "extras": "lookup"}))
+
+    def look(self, body):
+        u = U.Updates(SimpleNamespace(cfg=cfg_in(self.tmp), ledger=None, admission=None))
+        sig = signed(body)
+        with mock.patch.object(U.urllib.request, "urlopen", side_effect=lambda req, timeout=0: Resp(sig if req.full_url.endswith(".sig") else body)), \
+             mock.patch.object(U, "install_dir", return_value=Path(self.tmp)), \
+             mock.patch.object(U, "downloadable", return_value=True):
+            return u, u.check()
+
+    def test_an_install_from_a_base_installer_gets_the_small_update(self):
+        self.installed_by("0.1.4")
+        u, v = self.look(app_feed())
+        self.assertEqual((v["can_install"], v["kind"], v["size_mb"]), (True, "small", 23))
+        started = []
+        with mock.patch.object(U, "install_dir", return_value=Path(self.tmp)), \
+             mock.patch.object(U.threading, "Thread", side_effect=lambda target, args, **k: SimpleNamespace(start=lambda: started.append(args))):
+            u.install()
+        f, app = started[0]
+        self.assertEqual((f["sha256"], app["sha256"]), ("ab" * 32, "cd" * 32))         # the installer kept as the fallback
+
+    def test_any_other_install_gets_the_whole_installer(self):
+        for base in ("0.1.3.1", None):
+            if base:
+                self.installed_by(base)
+            else:
+                os.remove(os.path.join(self.tmp, "app", "install.json"))           # an install from before 0.1.4: none
+            u, v = self.look(app_feed())
+            self.assertEqual((v["can_install"], v["kind"], v["size_mb"]), (True, "full", None), base)
+
+    def test_the_small_update_runs_the_app_helper_and_the_installer_does_not(self):
+        self.installed_by("0.1.4")
+        u = U.Updates(SimpleNamespace(cfg=cfg_in(self.tmp), ledger=None, admission=None))
+        with mock.patch.object(U, "fetch_checked", side_effect=lambda url, dest, sha: dest), \
+             mock.patch.object(U, "busy", return_value=False), \
+             mock.patch.object(U, "install_dir", return_value=Path(self.tmp)), \
+             mock.patch.object(U, "run_installer", side_effect=AssertionError("not the installer")), \
+             mock.patch.object(U, "run_app_update") as app, mock.patch.object(U.threading, "Timer"):
+            u._install({"url": "https://example.invalid/nebula.run", "sha256": "ab" * 32},
+                       {"url": "https://example.invalid/nebula-app.tar.gz", "sha256": "cd" * 32})
+        self.assertEqual(app.call_args[0][0].name, "nebula-app.tar.gz")
+        self.assertEqual(u.installing, "installing")
+
+    def test_a_small_update_without_its_bases_or_https_is_ignored(self):
+        for body in (app_feed(bases="0.1.4"), app_feed(app_url="http://example.invalid/a.tar.gz")):
+            self.assertIsNone(U.read_feed(body, signed(body), PUB))
+        bad = json.loads(app_feed()); bad["files"][U.platform_key() or "linux-x86_64"]["app"]["bases"] = ["latest"]
+        body = json.dumps(bad).encode()
+        self.assertIsNone(U.read_feed(body, signed(body), PUB))
+
+    @unittest.skipIf(os.name == "nt", "the venv layout below is Linux's")
+    def test_the_apply_step_puts_the_new_code_in_place_and_records_it(self):
+        """APPLY_APP for real, in a venv of its own: the wheel installed, install.json and VERSION moved on."""
+        import subprocess
+        import sys
+        import tarfile
+        import zipfile
+        home = Path(self.tmp)
+        if subprocess.run([sys.executable, "-m", "venv", str(home / "python")], capture_output=True).returncode != 0:
+            self.skipTest("no venv with pip here")
+        py = home / "python" / "bin" / "python3"
+        self.installed_by("0.1.4")
+        work = Path(tempfile.mkdtemp())
+        whl = work / "nebula_eh-0.1.4.1-py3-none-any.whl"                              # a stand-in Nebula
+        with zipfile.ZipFile(whl, "w") as z:
+            z.writestr("nebula_stand_in/__init__.py", "VERSION = '0.1.4.1'\n")
+            z.writestr("nebula_eh-0.1.4.1.dist-info/METADATA", "Metadata-Version: 2.1\nName: nebula-eh\nVersion: 0.1.4.1\nProvides-Extra: lookup\n")
+            z.writestr("nebula_eh-0.1.4.1.dist-info/WHEEL", "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+            z.writestr("nebula_eh-0.1.4.1.dist-info/RECORD", "")
+        (work / "constraints.txt").write_text("")
+        arc = work / "nebula-eh-0.1.4.1-app-linux-x86_64.tar.gz"
+        with tarfile.open(arc, "w:gz") as t:
+            t.add(whl, arcname=whl.name)
+            t.add(work / "constraints.txt", arcname="constraints.txt")
+        (work / "apply.py").write_text(U.APPLY_APP)
+        r = subprocess.run([str(py), str(work / "apply.py"), str(arc), str(home)], capture_output=True, text=True, timeout=300,
+                           env={**os.environ, "PIP_NO_INDEX": "1"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads((home / "app" / "install.json").read_text())["version"], "0.1.4.1")
+        self.assertEqual(json.loads((home / "app" / "install.json").read_text())["base"], "0.1.4")       # its base stays
+        self.assertEqual((home / "app" / "VERSION").read_text(), "0.1.4.1\n")
+        out = subprocess.run([str(py), "-c", "import nebula_stand_in as n; print(n.VERSION)"], capture_output=True, text=True)
+        self.assertEqual(out.stdout.strip(), "0.1.4.1")
+
+
+class SignFeedAppTest(unittest.TestCase):
+    def test_the_signer_writes_the_small_update_with_its_bases(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "greenfield"))
+        import sign_feed
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "n.run").write_bytes(b"run")
+        (tmp / "a.tar.gz").write_bytes(b"app")
+        body = json.loads(sign_feed.build("0.1.4.1", "fixes", ["linux-x86_64=%s=https://x.invalid/n.run" % (tmp / "n.run")], None,
+                                          ["linux-x86_64=%s=https://x.invalid/a.tar.gz=0.1.4, v0.1.4" % (tmp / "a.tar.gz")]))
+        app = body["files"]["linux-x86_64"]["app"]
+        self.assertEqual((app["bases"], app["bytes"], app["sha256"]), (["0.1.4", "0.1.4"], 3, hashlib.sha256(b"app").hexdigest()))
+        with self.assertRaises(SystemExit):
+            sign_feed.build("0.1.4.1", "", [], None, ["linux-x86_64=%s=https://x.invalid/a.tar.gz=0.1.4" % (tmp / "a.tar.gz")])

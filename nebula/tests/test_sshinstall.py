@@ -136,6 +136,7 @@ class AdminTest(unittest.TestCase):
         with self.assertRaises(S.SshError):
             S.run_admin(T(""), ["podman-install"], "")
 
+    @unittest.skipUnless(shutil.which("ssh"), "needs an ssh client: the key is read as `ssh -G` reads the settings")
     def test_an_address_gets_the_key_of_the_ssh_name_that_points_at_it(self):
         with tempfile.TemporaryDirectory() as d:
             key = os.path.join(d, "id_sage")

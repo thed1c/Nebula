@@ -7,13 +7,18 @@
 It builds the payload every installer carries, with nothing needed from the user's machine but the NVIDIA driver:
   python/    a standalone CPython 3.12 (python-build-standalone), with Nebula EH and every dependency already installed
              into it (offline: wheels for the target platform, fetched here)
-  impulse/   impulse-server and the CUDA runtime it links (cudart, cuBLAS; libgomp on Linux)
-  halo/      Halo's own model (nebula/halo_engine.py): llama-server and its libraries (the CUDA ones are Impulse's).
-             Its base model (Liquid's LFM2.5-1.2B QAD Q4_0, 0.7 GB) is not inside: the installer fetches it while it
-             unpacks the rest (design decision 10-21), checked against the sha256 in nebula/catalog/halo.json; with no
-             network then, Nebula fetches it when it starts. --halo-base puts it inside instead (an offline installer).
+  impulse/   impulse-server and the CUDA runtime it links (cudart, cuBLAS; libgomp on Linux); not Impulse Flash-Next
+             (impulse-fx and its engine library): a piece of its own beside the installer, downloaded by the Flash-Next
+             guided setup
+  Halo       runs on impulse/ with an NVIDIA card; without one on Impulse portable (CPU + Vulkan), which is not inside:
+             downloaded on such a machine only (the owner's 2026-10-27 word: "keep the downloads as small as possible";
+             nebula/catalog/pieces.json). Its base model (Liquid's LFM2.5-1.2B QAD Q4_0, 0.7 GB) is not inside
+             either: the installer fetches it while it unpacks the rest (design decision 10-21), checked against the
+             sha256 in nebula/catalog/halo.json; with no network then, Nebula fetches it when it starts. --halo-base puts
+             it inside instead (halo/, an offline installer).
   app/       the launcher (its window, or the browser), the icon, the licences
-Then:
+Then (and, for each platform, nebula-eh-<version>-app-<platform>-x86_64.tar.gz: the small update, Nebula's wheel and
+its constraints, for an install whose Impulse and the rest stay as they are):
   linux      nebula-eh-<version>-linux-x86_64.run: one file; run it (or double-click it) and it installs for this user
              (~/.local/share/nebula-eh), adds the "Nebula EH" icon and opens it. No root, no Python, no internet.
   windows    the payload folder and the NSIS script (greenfield/windows/installer.nsi); makensis (on the Windows
@@ -71,13 +76,6 @@ def site_packages(py: Path, plat: str) -> Path:
     return py / "Lib" / "site-packages" if plat == "windows" else py / "lib" / "python3.12" / "site-packages"
 
 
-HALO_WRAPPER = """#!/bin/sh
-# llama-server for Halo's own model, with its libraries beside it and CUDA's (NVIDIA's pip packages, or Impulse's copies)
-D=$(dirname "$(readlink -f "$0")")
-LD_LIBRARY_PATH="$D:$D/../python/lib/python3.12/site-packages/nvidia/cu13/lib:$D/../impulse${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$D/llama-server.bin" "$@"
-"""
-
-
 def halo_base() -> dict:
     return json.loads((ROOT / "nebula" / "catalog" / "halo.json").read_text())["base"]
 
@@ -86,24 +84,15 @@ def halo_base() -> dict:
 LLAMA_LICENSE = ROOT / "impulse" / "flashnext" / "third_party" / "ggml" / "LICENSE"   # ggml's MIT notice (One Engine P0 moved it)
 
 
-def add_halo(pay: Path, plat: str, server_dir: Path, base: Path | None) -> None:
-    """halo/: llama-server (+ its ggml backends), and the base model only when given (else fetched at install)."""
+def add_halo(pay: Path, base: Path) -> None:
+    """halo/: Halo's base model, for an offline installer (else it is fetched at install). Its runtime is Impulse."""
     m = halo_base()
-    if base is not None and (base.stat().st_size != m["bytes"] or hashlib.sha256(base.read_bytes()).hexdigest() != m["sha256"]):
+    if base.stat().st_size != m["bytes"] or hashlib.sha256(base.read_bytes()).hexdigest() != m["sha256"]:
         raise SystemExit(f"{base}: not Halo's base model (size or sha256 differs from nebula/catalog/halo.json)")
     h = pay / "halo"
     h.mkdir()
-    for f in server_dir.iterdir():
-        if (f.is_file() or f.is_symlink()) and (f.name.startswith(("lib", "llama-server", "ggml")) or ".so" in f.name or f.suffix == ".dll"):
-            shutil.copy2(f, h / f.name, follow_symlinks=False)     # the .so links stay links
-    if plat == "linux":
-        (h / "llama-server").rename(h / "llama-server.bin")
-        (h / "llama-server").write_text(HALO_WRAPPER)
-        (h / "llama-server").chmod(0o755)
-    shutil.copy(LLAMA_LICENSE, h / "LICENSE")                      # llama.cpp's MIT notice, beside its program
-    if base is not None:
-        shutil.copy2(base, h / m["file"])
-    say("halo:", ", ".join(sorted(p.name for p in h.iterdir())))
+    shutil.copy2(base, h / m["file"])
+    say("halo: its base model, inside (offline)")
 
 
 SANDBOX_FILES = ("sandbox.ps1", "sandbox-setup.sh", "sandbox-undo.ps1")
@@ -139,7 +128,7 @@ def add_pair(pay: Path, pair_bin: Path, src: Path | None) -> None:
 
 
 def build_payload(plat: str, impulse: Path | None, work: Path, cache: Path,
-                  halo_server: Path | None = None, halo_base: Path | None = None,
+                  halo_base: Path | None = None,
                   pair_bin: Path | None = None, pair_src: Path | None = None, online: bool = False,
                   sandbox_impulse: Path | None = None) -> Path:
     pay = work / "payload"
@@ -179,7 +168,7 @@ def build_payload(plat: str, impulse: Path | None, work: Path, cache: Path,
         shutil.copy2(whl, pay / "wheels" / whl.name)
         (pay / "online.json").write_text(json.dumps({"python_url": f"https://github.com/astral-sh/python-build-standalone/releases/download/{PBS}/{name}",
                                                      "python_sha256": hashlib.sha256(tgz.read_bytes()).hexdigest(),
-                                                     "wheel": whl.name, "extras": EXTRAS[plat],
+                                                     "wheel": whl.name, "extras": EXTRAS[plat], "version": version(),
                                                      "extra_index": TORCH_CPU if "docling" in EXTRAS[plat] else ""}))
         shutil.rmtree(py)
         if plat == "windows":
@@ -188,21 +177,21 @@ def build_payload(plat: str, impulse: Path | None, work: Path, cache: Path,
         say(f"online: {len(pins)} packages pinned; Python and the packages are fetched at install")
     # 3. Impulse, and Halo's own model
     if impulse:
-        shutil.copytree(impulse, pay / "impulse",
-                        ignore=(shutil.ignore_patterns("libcudart.so*", "libcublas.so*", "libcublasLt.so*",
-                                                       "cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll") if online else None))
+        # Impulse Flash-Next (impulse-fx and its engine library) is not inside: a piece of its own that the Flash-Next
+        # guided setup downloads (nebula/pieces.py; make_flashnext writes it beside the installer)
+        sys.path.insert(0, str(Path(__file__).parent))
+        from impulse_dist import FX
+        skip = list(FX[plat]) + (["libcudart.so*", "libcublas.so*", "libcublasLt.so*", "cudart64_*.dll", "cublas64_*.dll",
+                                  "cublasLt64_*.dll"] if online else [])
+        shutil.copytree(impulse, pay / "impulse", ignore=shutil.ignore_patterns(*skip))
         if plat == "linux" and (pay / "impulse" / "impulse-server").exists():   # today's wrapper: CUDA beside it, or from pip
             sys.path.insert(0, str(Path(__file__).parent))
             from impulse_dist import WRAPPER
             (pay / "impulse" / "impulse-server").write_text(WRAPPER)
             (pay / "impulse" / "impulse-server").chmod(0o755)
 
-    if halo_server:
-        add_halo(pay, plat, halo_server, halo_base)
-        if plat == "windows" and (pay / "impulse").is_dir():     # llama-server.exe needs the MSVC runtime beside it too
-            for f in (pay / "impulse").glob("*.dll"):
-                if f.name.lower().startswith(("msvcp", "vcruntime", "vcomp", "concrt")) and not (pay / "halo" / f.name).exists():
-                    shutil.copy2(f, pay / "halo" / f.name)
+    if halo_base:
+        add_halo(pay, halo_base)
     if pair_bin:
         add_pair(pay, pair_bin, pair_src)
     # 4. the launcher and the icon
@@ -212,7 +201,7 @@ def build_payload(plat: str, impulse: Path | None, work: Path, cache: Path,
     shutil.copy(ROOT / "nebula" / "app" / "icon.ico", app / "nebula.ico")
     for f in ("LICENSE", "NOTICE"):
         shutil.copy(ROOT / f, app / f)
-    shutil.copy(LLAMA_LICENSE, app / "LICENSE-llama.cpp")          # Impulse links llama.cpp; halo/ carries llama-server
+    shutil.copy(LLAMA_LICENSE, app / "LICENSE-llama.cpp")          # Impulse links llama.cpp
     if (ROOT / "impulse" / "THIRD_PARTY_NOTICES.md").exists():
         shutil.copy(ROOT / "impulse" / "THIRD_PARTY_NOTICES.md", app / "THIRD_PARTY_NOTICES.md")
     (app / "VERSION").write_text(version() + "\n")
@@ -267,6 +256,8 @@ rm -rf "$DEST.old"; [ -d "$DEST" ] && mv "$DEST" "$DEST.old"
 mv "$DEST.new" "$DEST" && rm -rf "$DEST.old"
 trap - EXIT
 PY="$DEST/python/bin/python3"
+# what this installer put in place: Nebula's updater offers a small update (code alone) to an install made by its base
+printf '{"base": "%s", "version": "%s", "extras": "%s", "extra_index": "%s"}\n' "__VERSION__" "__VERSION__" "__EXTRAS__" "__EXTRA_INDEX_URL__" > "$DEST/app/install.json"
 if [ ! -f "$CONF/nebula.json" ]; then
   printf '{\n "port": 8090,\n "ledger": "%s",\n "tiers": []\n}\n' "$CONF/nebula.sqlite3" > "$CONF/nebula.json"
 fi
@@ -298,10 +289,10 @@ update-desktop-database "$DATA/applications" >/dev/null 2>&1 || true
 say "Fetching what Nebula needs beside itself (Lookup's store and models, OpenShell, images)…"
 "$PY" -m nebula.prereqs --config "$CONF/nebula.json" --dest "$DEST" 2>&1 | sed 's/^\[nebula\] /  /' | tee "$CONF/prereqs.log" || true
 if [ -x "$DEST/impulse/impulse-server" ] && ! command -v nvidia-smi >/dev/null 2>&1; then
-  say "Impulse needs an NVIDIA graphics card and its driver, and this machine has none. Nebula still works: Halo runs on the CPU, and you can use other engines, or a friend's."
+  say "No NVIDIA graphics card here, so Impulse (CUDA) is not used. Nebula still works: Halo and your models run on Impulse portable, a small download the first time (a Radeon or another card through Vulkan, else the CPU)."
 elif [ -x "$DEST/impulse/impulse-server" ] && ! WHY=$("$DEST/impulse/impulse-server" --help 2>&1 >/dev/null); then
   case "$WHY" in
-    *libcuda.so*) say "Impulse needs an NVIDIA graphics card and its driver, and this machine has none. Nebula still works: Halo runs on the CPU, and you can use other engines, or a friend's." ;;
+    *libcuda.so*) say "No NVIDIA graphics card here, so Impulse (CUDA) is not used. Nebula still works: Halo and your models run on Impulse portable, a small download the first time (a Radeon or another card through Vulkan, else the CPU)." ;;
     *) say "Impulse is included but cannot run on this machine ($(printf '%s' "$WHY" | head -1 | cut -c1-160)). Nebula still works: it can use other engines, or a friend's." ;;
   esac
 fi
@@ -316,6 +307,48 @@ __PAYLOAD__
 '''
 
 
+def make_flashnext(impulse: Path, plat: str, out: Path) -> Path | None:
+    """impulse-flashnext-<version>-<platform>-x86_64: Impulse Flash-Next's files (impulse_dist.FX), the piece the Flash-Next
+    guided setup downloads (nebula/catalog/pieces.json): left out of the installers, to keep them small."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    from impulse_dist import FX
+    files = [impulse / n for n in FX[plat] if (impulse / n).is_file()]
+    if not files:
+        return None
+    files.append(Path(__file__).resolve().parents[1] / "impulse" / "flashnext" / "data" / "expert-profile.bin")   # a layer split needs it
+    out.mkdir(parents=True, exist_ok=True)
+    if plat == "windows":
+        import zipfile
+        dest = out / f"impulse-flashnext-{version()}-windows-x86_64.zip"
+        with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+            for f in files:
+                z.write(f, f.name)
+    else:
+        dest = out / f"impulse-flashnext-{version()}-linux-x86_64.tar.gz"
+        with tarfile.open(dest, "w:gz", compresslevel=6) as t:
+            for f in files:
+                t.add(f, arcname=f.name)
+    h = hashlib.sha256(dest.read_bytes()).hexdigest()
+    (out / (dest.name + ".sha256")).write_text(f"{h}  {dest.name}\n")
+    say("wrote", dest, f"{dest.stat().st_size / 2**20:.0f} MB (Impulse Flash-Next, a piece of its own)")
+    return dest
+
+
+def make_app(pay: Path, plat: str, out: Path) -> Path:
+    """nebula-eh-<version>-app-<platform>.tar.gz: the small update (nebula/updates.py), Nebula's wheel and the package
+    versions it was tested with, for an install whose Impulse and the rest beside Nebula stay as they are."""
+    out.mkdir(parents=True, exist_ok=True)
+    dest = out / f"nebula-eh-{version()}-app-{plat}-x86_64.tar.gz"
+    whl = next((pay / "wheels").glob("nebula_eh-*.whl"))
+    with tarfile.open(dest, "w:gz", compresslevel=9) as t:
+        t.add(whl, arcname=whl.name)
+        t.add(pay / "constraints.txt", arcname="constraints.txt")
+    h = hashlib.sha256(dest.read_bytes()).hexdigest()
+    (out / (dest.name + ".sha256")).write_text(f"{h}  {dest.name}\n")
+    say("wrote", dest, f"{dest.stat().st_size / 2**20:.0f} MB (the small update)")
+    return dest
+
+
 def make_run(pay: Path, out: Path) -> Path:
     ver = version()
     out.mkdir(parents=True, exist_ok=True)
@@ -327,14 +360,15 @@ def make_run(pay: Path, out: Path) -> Path:
                 t.add(p, arcname=p.name)
         with open(dest, "wb") as f:
             hb = halo_base()
-            fetch = (pay / "halo").is_dir() and not (pay / "halo" / hb["file"]).exists()
+            fetch = not (pay / "halo" / hb["file"]).exists()                    # fetched at install unless it is inside
             rel = f"models/{hb['repo']}/{hb['file']}" if fetch else ""      # hf.Pulls' layout under the config's folder
             url = f"https://huggingface.co/{hb['repo']}/resolve/{hb['revision']}/{hb['file']}"
             online = json.loads((pay / "online.json").read_text()) if (pay / "online.json").exists() else {}
             f.write(RUN_HEADER.replace("__VERSION__", ver).replace("__HALO_REL__", rel).replace("__HALO_URL__", url)
                     .replace("__HALO_SHA__", hb["sha256"]).replace("__PY_URL__", online.get("python_url", ""))
                     .replace("__PY_SHA__", online.get("python_sha256", "")).replace("__WHEEL__", online.get("wheel", ""))
-                    .replace("__EXTRAS__", online.get("extras", ""))
+                    .replace("__EXTRAS__", online.get("extras", "") or EXTRAS["linux"])
+                    .replace("__EXTRA_INDEX_URL__", online.get("extra_index", "") or "")
                     .replace("__EXTRA_INDEX__", f'--extra-index-url "{online["extra_index"]}"' if online.get("extra_index") else "").encode())
             with open(tgz, "rb") as g:
                 shutil.copyfileobj(g, f)
@@ -349,7 +383,6 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--platform", choices=["linux", "windows"], required=True)
     ap.add_argument("--impulse", type=Path, help="a folder with impulse-server (and its libraries) for that platform")
-    ap.add_argument("--halo-server", type=Path, help="a folder with llama-server and its libraries (Halo's own model)")
     ap.add_argument("--halo-base", type=Path, help="Halo's base model file (LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf)")
     ap.add_argument("--pair-bin", type=Path, help="PAIR's services (services/build/bin of NVIDIA/Personal-AI-Router)")
     ap.add_argument("--pair-src", type=Path, help="PAIR's source, for its LICENSE and notices")
@@ -360,8 +393,11 @@ def main(argv=None) -> int:
     ap.add_argument("--cache", type=Path, default=Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "nebula-package")
     a = ap.parse_args(argv)
     work = a.work or Path(tempfile.mkdtemp(prefix=f"nebula-pkg-{a.platform}-"))
-    pay = build_payload(a.platform, a.impulse, work, a.cache, a.halo_server, a.halo_base, a.pair_bin, a.pair_src,
+    pay = build_payload(a.platform, a.impulse, work, a.cache, a.halo_base, a.pair_bin, a.pair_src,
                         online=not a.offline, sandbox_impulse=a.sandbox_impulse)
+    make_app(pay, a.platform, a.out)
+    if a.impulse:
+        make_flashnext(a.impulse, a.platform, a.out)
     if a.platform == "linux":
         make_run(pay, a.out)
     else:

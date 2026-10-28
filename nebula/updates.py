@@ -18,6 +18,15 @@ A feed that is unsigned, badly signed or malformed is ignored (logged only): the
      "files": {"linux-x86_64": {"url": "...", "sha256": "..."}, "windows-x86_64": {"url": "...", "sha256": "..."}},
      "release_page": "https://github.com/thed1c/Nebula/releases/tag/v0.1.3"}
 
+Small updates (the owner's 2026-10-27 word: "small updates", "keep the downloads as small as possible"): when Impulse
+and the rest beside Nebula did not change, a platform's file can carry "app", Nebula's own code alone (its wheel and the
+package versions it was tested with, tens of MB instead of the installer's hundreds), offered only to an install whose
+installer is one of its "bases" (app/install.json, written by the installers); any other gets the whole installer.
+
+    "files": {"linux-x86_64": {"url": "...run", "sha256": "...",
+                               "app": {"url": "...app-linux-x86_64.tar.gz", "sha256": "...", "bytes": 23000000,
+                                       "bases": ["0.1.4"]}}}
+
 Two ways to the new version:
   notify   the page's button opens the release page (while the releases are private, the only way)
   install  only for a Nebula the one-click installer put in place, and only when its file downloads without signing in:
@@ -204,8 +213,14 @@ def read_feed(body: bytes, sig: bytes, public_key: str = None) -> dict | None:
             raise ValueError("release_page is not https")
         files = feed.get("files") or {}
         for f in files.values():
-            if not str(f["url"]).startswith("https://") or not re.fullmatch(r"[0-9a-f]{64}", str(f["sha256"])):
-                raise ValueError("a file without an https url or a sha256")
+            for x in [f] + ([f["app"]] if f.get("app") is not None else []):
+                if not str(x["url"]).startswith("https://") or not re.fullmatch(r"[0-9a-f]{64}", str(x["sha256"])):
+                    raise ValueError("a file without an https url or a sha256")
+            if f.get("app") is not None:
+                if not isinstance(f["app"].get("bases"), list):
+                    raise ValueError("a small update without its bases")
+                for b in f["app"]["bases"]:
+                    version_tuple(b)
     except (ValueError, KeyError, TypeError, AttributeError) as e:
         LOG.warning("updates: the feed is signed but malformed (%s): ignored", e)
         return None
@@ -244,6 +259,29 @@ def install_dir() -> Path | None:
     except ValueError:
         return None
     return home
+
+
+def install_info(home: Path | None = None) -> dict:
+    """What the installer recorded (app/install.json): its own version ("base"), the version now in place, the extras."""
+    home = home if home is not None else install_dir()
+    if home is None:
+        return {}
+    try:
+        d = json.loads(Path(home, "app", "install.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def small_update(f: dict | None, info: dict) -> dict | None:
+    """The file's small update when this install can take it (its installer is one of the bases), else None."""
+    app = (f or {}).get("app")
+    if not app or not info.get("base"):
+        return None
+    try:
+        return app if any(version_tuple(b) == version_tuple(info["base"]) for b in app.get("bases") or []) else None
+    except ValueError:
+        return None
 
 
 def busy(server) -> bool:
@@ -330,9 +368,12 @@ class Updates:
             if feed:
                 f = (feed.get("files") or {}).get(platform_key() or "")
                 public = bool(f and install_dir() is not None and downloadable(f["url"]))
+                app = small_update(f, install_info()) if public else None
+                if app is not None and not downloadable(app["url"]):
+                    app = None
                 self.state.update(latest=str(feed["version"]).lstrip("v"), notes=str(feed.get("notes") or "")[:4000],
                                   published=feed.get("published"), release_page=feed["release_page"],
-                                  file=f if public else None)
+                                  file={k: v for k, v in f.items() if k != "app"} if public else None, app=app)
             self._save()
         return self.view()
 
@@ -349,6 +390,8 @@ class Updates:
                 "notes": s.get("notes") or "", "published": s.get("published"),
                 "release_page": s.get("release_page") if newer else None,
                 "can_install": newer and bool(s.get("file")) and install_dir() is not None,
+                "kind": ("small" if s.get("app") else "full") if newer and s.get("file") else None,
+                "size_mb": round(int((s.get("app") or {}).get("bytes") or 0) / 2**20) or None if newer else None,
                 "installing": self.installing, "last_checked": s.get("last_checked"), "error": s.get("error")}
 
     def install(self) -> dict:
@@ -364,20 +407,25 @@ class Updates:
                 return {**v, "action": "installing"}
             self.installing = "downloading"
             f = dict(self.state["file"])
-        threading.Thread(target=self._install, args=(f,), name="update-install", daemon=True).start()
+            app = dict(self.state["app"]) if self.state.get("app") else None
+        threading.Thread(target=self._install, args=(f, app), name="update-install", daemon=True).start()
         return {**self.view(), "action": "installing"}
 
-    def _install(self, f: dict) -> None:
+    def _install(self, f: dict, app: dict | None = None) -> None:
         try:
             work = Path(tempfile.mkdtemp(prefix="nebula-update-"))
-            name = f["url"].rsplit("/", 1)[-1].split("?")[0] or ("Setup.exe" if os.name == "nt" else "nebula.run")
-            dest = fetch_checked(f["url"], work / name, f["sha256"])
+            src = app or f                          # the small update when this install can take it, else the installer
+            name = src["url"].rsplit("/", 1)[-1].split("?")[0] or ("Setup.exe" if os.name == "nt" else "nebula.run")
+            dest = fetch_checked(src["url"], work / name, src["sha256"])
             self.installing = "waiting"            # for the turns in flight: never in the middle of one
             while busy(self.server):
                 if self.closing.wait(5):
                     return
             self.installing = "installing"
-            run_installer(dest, self.cfg, install_dir())
+            if app is not None:
+                run_app_update(dest, self.cfg, install_dir())
+            else:
+                run_installer(dest, self.cfg, install_dir())
         except Exception as e:  # noqa: BLE001 - said on the page; the running Nebula carries on
             LOG.warning("updates: the update did not run: %s", e)
             self.installing = f"failed: {str(e)[:200]}"
@@ -437,6 +485,74 @@ def run_installer(path: Path, cfg, home: Path | None) -> None:
     path.chmod(0o755)
     helper = work / "nebula-update.sh"
     helper.write_text(LINUX_HELPER)
+    log = open(work / "nebula-update.log", "ab")
+    subprocess.Popen(["sh", str(helper), str(path), str(os.getpid()), str(home)], stdin=subprocess.DEVNULL,
+                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
+
+
+# A small update: Nebula's own code (its wheel) and the package versions it was tested with, put in place by the
+# installer's own Python once Nebula has stepped out; then Nebula opens again. pip keeps every package already at its
+# version, so only what changed is fetched. Nothing else (Python, Impulse, PAIR) is touched.
+APPLY_APP = """import json, pathlib, subprocess, sys, tarfile, tempfile
+arc, home = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+info_p = home / "app" / "install.json"
+info = json.loads(info_p.read_text(encoding="utf-8-sig"))
+d = pathlib.Path(tempfile.mkdtemp(dir=arc.parent))
+with tarfile.open(arc) as t:
+    t.extractall(d, filter="data")
+whl = next(d.glob("nebula_eh-*.whl"))
+cmd = [sys.executable, "-m", "pip", "install", "-q", "--disable-pip-version-check", "--no-warn-script-location", "--upgrade",
+       "--constraint", str(d / "constraints.txt")]
+if info.get("extra_index"):
+    cmd += ["--extra-index-url", info["extra_index"]]
+cmd.append(f"{whl}[{info['extras']}]" if info.get("extras") else str(whl))
+r = subprocess.run(cmd)
+if r.returncode != 0:
+    print("the small update did not install: Nebula opens as it was")
+    sys.exit(1)
+info["version"] = whl.name.split("-")[1]
+info_p.write_text(json.dumps(info))
+(home / "app" / "VERSION").write_text(info["version"] + "\\n")
+print("Nebula", info["version"], "is in place")
+"""
+
+LINUX_APP_HELPER = """#!/bin/sh
+# Nebula's small update (nebula/updates.py): Nebula steps out, its new code goes in with the installer's Python, it opens again.
+kill -INT "$2" 2>/dev/null
+for i in $(seq 1 60); do kill -0 "$2" 2>/dev/null || break; sleep 1; done
+kill -0 "$2" 2>/dev/null && kill -TERM "$2"
+sleep 1
+"$3/python/bin/python3" "$(dirname "$0")/apply.py" "$1" "$3"
+exec "$3/nebula-open"
+"""
+
+WINDOWS_APP_HELPER = """@echo off
+rem Nebula's small update (nebula/updates.py): waits for Nebula to close, puts its new code in place, opens Nebula again.
+:wait
+tasklist /FI "PID eq %~2" 2>nul | find "%~2" >nul && (timeout /t 1 /nobreak >nul & goto wait)
+"%~3\\python\\python.exe" "%~dp0apply.py" "%~1" "%~3"
+cd /d "%~4"
+start "" "%~3\\python\\pythonw.exe" -m nebula.app --config "%~5"
+"""
+
+
+def run_app_update(path: Path, cfg, home: Path | None) -> None:
+    """Starts the helper that puts the small update in place once Nebula has stepped out, then reopens it. No sudo, ever."""
+    if home is None:
+        raise RuntimeError("this Nebula was not put in place by the installer")
+    if not install_info(home).get("base"):
+        raise RuntimeError("this install has no app/install.json: it takes the whole installer")
+    work = path.parent
+    (work / "apply.py").write_text(APPLY_APP)
+    if os.name == "nt":
+        helper = work / "nebula-app-update.cmd"
+        helper.write_text(WINDOWS_APP_HELPER)
+        flags = 0x00000008 | 0x00000200 | 0x08000000
+        subprocess.Popen(["cmd", "/c", str(helper), str(path), str(os.getpid()), str(home), cfg.base_dir or str(work), cfg.path or ""],
+                         creationflags=flags, close_fds=True)
+        return
+    helper = work / "nebula-app-update.sh"
+    helper.write_text(LINUX_APP_HELPER)
     log = open(work / "nebula-update.log", "ab")
     subprocess.Popen(["sh", str(helper), str(path), str(os.getpid()), str(home)], stdin=subprocess.DEVNULL,
                      stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)

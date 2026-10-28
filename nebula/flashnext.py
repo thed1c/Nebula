@@ -17,6 +17,10 @@ import json
 import os
 from pathlib import Path
 
+# Where a Flash-Next pack set up through "Run a model" runs (0.1.4): "sandbox", in an OpenShell sandbox like every other
+# engine (its image carries impulse-fx beside impulse-server), or "local", straight on this computer. The owner's pick
+# is asked (2026-10-27, sandbox recommended); the other is this one word.
+PLACEMENT = "sandbox"
 PACKAGE = "impulse-flashnext"
 LABEL = "Impulse Flash-Next"
 IMAGE = "nebula-impulse-flashnext:latest"
@@ -24,6 +28,7 @@ FX = "/opt/impulse/bin/impulse-fx"                  # Impulse's server for a pac
 IMAGE_PYTHON = "/opt/strata-serve/.venv/bin/python"  # a Python with Pillow: picture formats the encoder cannot read
 SELFPIN = "/opt/nebula/libnebula-selfpin.so"
 EXPERT_PROFILE = "/opt/strata-nvfp4/data/expert-profile.bin"
+PIECE_PROFILE = "expert-profile.bin"                # the Impulse Flash-Next piece carries it beside impulse-fx
 
 
 ROPE_TYPES = ("auto", "none", "linear", "yarn", "dynamic", "ntk")   # impulse-fx's "rope" (fx_server.cpp rope_args)
@@ -175,6 +180,29 @@ def run_config(files: dict, *, name: str, port: int, gpus: int = 1, layer_split:
         if bad or rope.get("type", "auto") not in ROPE_TYPES:
             raise ValueError(f"rope: type one of {', '.join(ROPE_TYPES)}, optional factor and orig_ctx (got {rope})")
         cfg["rope"] = dict(rope)
+    return cfg
+
+
+def local_config(files: dict, *, name: str, port: int, gpus: int = 1, parallel: int = 1, profile: str | None = None) -> dict:
+    """The run config for impulse-server's own Flash-Next mode (a pack run by the Impulse package, Run a model › a
+    Flash-Next pack): run_config with the pack's paths as they are here and `profile` (the expert profile the Impulse
+    Flash-Next piece carries; a layer split across cards needs it), without what only the reference image holds (its
+    working folder, log and CUDA folder). impulse-server alone passes only --pack and --native, and the engine then
+    wants the pack's PLE and embedding files too."""
+    cfg = run_config(files, name=name, port=port, gpus=gpus, parallel=parallel, prefill="auto")   # serving needs one (the tray's)
+    a = cfg["args"]
+    i = a.index("--expert-profile")
+    if profile:
+        a[i + 1] = profile
+    else:
+        del a[i:i + 2]
+    for k in ("cwd", "log", "lib_dirs"):
+        cfg.pop(k, None)
+    # no "gpu": impulse-server would set CUDA_VISIBLE_DEVICES to those indexes, over the cards Nebula chose (by UUID)
+    cfg.pop("gpu", None)
+    ls = cfg.pop("layer_split", None)
+    if gpus > 1:
+        a += ["--layer-split", ls or "16"]
     return cfg
 
 

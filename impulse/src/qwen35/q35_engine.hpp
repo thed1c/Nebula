@@ -111,6 +111,13 @@ struct Stats {
 
 struct HParams {
     bool lfm2 = false;
+    // flint (Recursive's Flint, llama.cpp src/models/flint.cpp, ggml-org/llama.cpp#30928): every layer attention, sliding
+    // (n_swa cells, the current one included) or full; RoPE only where has_rope (the full layers have no positions); learned
+    // sinks; QK RMSNorm; leading dense SwiGLU layers; sigmoid routing renormalized; one ungated shared expert
+    bool flint = false;
+    int n_swa = 0;
+    std::vector<bool> is_swa, has_rope;
+    bool pos1() const { return lfm2 || flint; }   // one position per token (no M-RoPE sections)
     bool dense = false;                 // qwen35 (Qwen3.5 / 3.8 dense): every layer llama.cpp's build_ffn, no experts
     int n_layer_all = 0;                // block_count, the MTP block included (the layer split counts it, as llama.cpp)
     int n_dense = 0, n_ff = 0;
@@ -218,6 +225,7 @@ private:
         ggml_tensor *wqkv, *wqkv_gate, *ssm_conv1d, *ssm_dt, *ssm_a, *ssm_beta, *ssm_alpha, *ssm_norm, *ssm_out;   // delta-net
         ggml_tensor *conv_in, *conv_out, *conv_kernel; // LFM2 short convolution
         ggml_tensor *dense_gate, *dense_up, *dense_down, *expert_bias;
+        ggml_tensor *attn_sinks;                                                                    // flint: [n_head]
         ggml_tensor *gate_inp, *gate_exps, *up_exps, *down_exps;                                    // routed experts
         ggml_tensor *gate_inp_shexp, *gate_shexp, *up_shexp, *down_shexp;                          // shared expert
         ggml_tensor *hc_an, *hc_ad, *hc_au, *hc_ai, *hc_fn, *hc_fd, *hc_fu, *hc_fi;                // qwen4exp: the two hc mixers
@@ -357,19 +365,20 @@ private:
     // The shape: tokens, padded KV cells, output rows, the embedding branch, a fresh recurrent state. Anything that moves a
     // tensor the graph points at (a new scheduler, the slot arena, the KV pager, a reserve) drops it (graph_invalidate).
     struct GraphKey {
-        int n = -1, n_kv = 0, n_outputs = 0; bool embd = false; int rs_zero = -1, ns = 1, head = 0, l0 = 0, l1 = 0; bool wide = false;
+        int n = -1, n_kv = 0, n_outputs = 0; bool embd = false; int rs_zero = -1, ns = 1, head = 0, l0 = 0, l1 = 0; bool wide = false; int swa_lo = 0;
         bool operator==(const GraphKey & o) const { return n == o.n && n_kv == o.n_kv && n_outputs == o.n_outputs && embd == o.embd &&
                                                            rs_zero == o.rs_zero && ns == o.ns && head == o.head && l0 == o.l0 && l1 == o.l1 &&
-                                                           wide == o.wide; }
+                                                           wide == o.wide && swa_lo == o.swa_lo; }
     };
     struct Graph {
         ggml_context * ctx = nullptr; ggml_cgraph * gf = nullptr; bool valid = false; GraphKey key;
-        ggml_tensor *inp_tokens = nullptr, *inp_embd = nullptr, *inp_pos = nullptr, *k_idxs = nullptr, *v_idxs = nullptr, *kq_mask = nullptr,
+        ggml_tensor *inp_tokens = nullptr, *inp_embd = nullptr, *inp_pos = nullptr, *k_idxs = nullptr, *v_idxs = nullptr, *kq_mask = nullptr, *kq_mask_swa = nullptr,
                     *s_copy = nullptr, *k_rot = nullptr, *v_rot = nullptr, *inp_out_ids = nullptr, *inp_h = nullptr, *t_logits = nullptr, *t_h = nullptr;
         // qwen4exp: the PLE rows, the indexer's cells (k_idxs as the attention's), and the QSA block layout (llama.cpp's
         // llm_graph_input_qsa: one set for every layer of a ratio)
         ggml_tensor *ple_rows = nullptr, *qsa_k_idxs = nullptr, *cell_blk = nullptr, *blk_cells = nullptr, *blk_pos = nullptr, *qsa_bias = nullptr;
         int qsa_r = 0;
+        uint32_t swa_lo = 0;                    // flint: the first cell the sliding layers read
         ggml_tensor *st_in = nullptr, *st_out = nullptr;   // a pipelined read's stage: the residual in and out
         std::vector<ggml_tensor *> adapt_ids;   // the cached layers' routing (adapt)
         DCheck dcheck;                          // the dcheck layer's twins

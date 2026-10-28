@@ -6,8 +6,8 @@
     GET  /api/sessions/ID           the transcript with each reply's tier, model, thinking, decision and cost,
                                     and the handoffs, briefings and lifecycle changes between the turns
     POST /api/sessions/ID/close     explicit close; /reopen puts it back; /delete deletes it for good
-    POST /api/sessions/delete       {"ids": [...]} or {"closed": true}: delete those conversations for good (not one with a
-                                    call still running); the security log records how many
+    POST /api/sessions/delete       {"ids": [...]}, {"closed": true} or {"all": true}: delete those conversations for good
+                                    (not one with a call still running); the security log records how many
     POST /api/chat                  {"session_id"?, "text"?, "tier"?, "agent"?, "escalate"?, "regenerate_from_seq"?}
                                     streams the answer as the chat dialect's SSE; the X-Nebula-Session-Id header
                                     names the session (a new one on the first turn)
@@ -49,6 +49,9 @@
     GET  /api/errors                the error log (nebula/errors.py): the cockpit's warnings and errors, newest last
     POST /api/errors                {"message", "detail"?}: an error the page itself hit
     POST /api/errors/clear          empty the error log (the ledger keeps its failed attempts)
+    GET  /api/wsl/memory            under WSL: the PC's RAM, .wslconfig's memory= now and what "use more" would set;
+                                    POST /api/wsl/memory/apply (a backup first), /undo {backup, had_file},
+                                    /restart {confirm: true} (wsl --shutdown, a second yes) - the owner's clicks only
     GET  /api/updates               is there a newer Nebula (nebula/updates.py): current, latest, notes, can_install,
                                     release_page, last_checked, mode; POST /api/updates/check looks now,
                                     POST /api/updates/install updates (or names the release page to open),
@@ -147,6 +150,12 @@ def get(server, path: str, query: str, headers=None) -> tuple[int, str, bytes]:
             return _json(200, W.get(server, path))
         except W.WizardError as e:
             return _json(e.status, {"error": str(e), **e.extra})
+    if path == "/api/wsl/memory":                  # WSL's share of the PC's RAM (nebula/wslmem.py): what a click would change
+        from nebula import wslmem
+        try:
+            return _json(200, wslmem.plan())
+        except wslmem.WslMemError as e:
+            return _json(e.status, {"error": str(e)})
     if path == "/api/updates":                     # a newer Nebula (nebula/updates.py): read from the last look, no network
         u = getattr(server, "updates", None)
         return _json(200, u.view() if u is not None else {"mode": "off", "current": __version__, "newer": False})
@@ -1069,7 +1078,24 @@ def updates_post(server, path: str, req: dict) -> dict:
     raise UiError(404, f"no such path: {path}")
 
 
+def wsl_memory_post(path: str, req: dict) -> dict:
+    """The owner's clicks only: apply (a backup first), undo (the backup back), restart (its own confirm)."""
+    from nebula import wslmem
+    try:
+        if path == "/api/wsl/memory/apply":
+            return wslmem.apply()
+        if path == "/api/wsl/memory/undo":
+            return wslmem.undo(str(req.get("backup") or ""), bool(req.get("had_file")))
+        if path == "/api/wsl/memory/restart":
+            return wslmem.restart(req.get("confirm") is True)
+    except wslmem.WslMemError as e:
+        raise UiError(e.status, str(e)) from None
+    raise UiError(404, f"no such path: {path}")
+
+
 def post(server, path: str, engine, ctx: Context, req: dict):
+    if path.startswith("/api/wsl/memory"):
+        return JsonReply(200, wsl_memory_post(path, req))
     if path.startswith("/api/halo"):
         return JsonReply(200, halo_post(server, path, req))
     if path.startswith("/api/updates"):
@@ -1192,9 +1218,10 @@ def post(server, path: str, engine, ctx: Context, req: dict):
         if len(rest) == 2:
             return JsonReply(200, sandbox_action(server, rest[0], rest[1], req))
     if path == "/api/sessions/delete":
-        ids = ledger.closed_sessions() if req.get("closed") is True else req.get("ids")
+        ids = ([s["session_id"] for s in ledger.sessions()] if req.get("all") is True else
+               ledger.closed_sessions() if req.get("closed") is True else req.get("ids"))
         if not isinstance(ids, list):
-            raise UiError(400, 'delete: {"ids": [...]} or {"closed": true}')
+            raise UiError(400, 'delete: {"ids": [...]}, {"closed": true} or {"all": true}')
         return JsonReply(200, delete_sessions(server, ledger, ids))
     if path.startswith("/api/sessions/"):
         rest = path[len("/api/sessions/"):].strip("/").split("/")

@@ -1,6 +1,6 @@
 """Deleting conversations for good (nebula/ledger.py delete_sessions, POST /api/sessions/ID/delete and
 /api/sessions/delete): every row of the conversation goes from every ledger table, the others stay whole and the ledger
-still verifies; "closed": true deletes the closed ones; one with a reply on the way is kept; the page asks first."""
+still verifies; "closed": true deletes the closed ones, "all": true every one; one with a reply on the way is kept; the page asks first."""
 import json
 import sqlite3
 import unittest
@@ -60,12 +60,22 @@ class DeleteSessionsTest(unittest.TestCase):
         self.assertEqual((status, sorted(json.loads(raw)["deleted"])), (200, sorted([a, c])))
         self.assertEqual(self.listed(), [b])
 
+    def test_all_of_them(self):
+        a, b, c = self.chat("one"), self.chat("two"), self.chat("three")
+        req(self.base, f"/api/sessions/{b}/close", {})
+        status, _h, raw = req(self.base, "/api/sessions/delete", {"all": True})
+        self.assertEqual((status, sorted(json.loads(raw)["deleted"])), (200, sorted([a, b, c])))
+        self.assertEqual(self.listed(), [])
+        ok, lines = verify(self.rig.path)
+        self.assertTrue(ok, "\n".join(lines))
+
     def test_a_list_of_ids(self):
         a, b = self.chat("one"), self.chat("two")
         out = json.loads(req(self.base, "/api/sessions/delete", {"ids": [a, "ses_nope", a]})[2])
         self.assertEqual((out["deleted"], out["missing"], out["busy"]), ([a], ["ses_nope"], []))
         self.assertEqual(self.listed(), [b])
         self.assertEqual(req(self.base, "/api/sessions/delete", {"ids": "all"})[0], 400)
+        self.assertEqual(req(self.base, "/api/sessions/delete", {"all": "yes"})[0], 400)
         self.assertEqual(req(self.base, "/api/sessions/delete", {})[0], 400)
 
     def test_one_with_a_reply_on_the_way_is_kept(self):
@@ -94,7 +104,7 @@ class DeleteSessionsTest(unittest.TestCase):
 
     def test_the_page_asks_first(self):
         html = PAGE.read_text()
-        for want in ('class="sdel" data-del=', 'data-delclosed="1"', 'id="del"', 'if (!confirm(question)) return;',
+        for want in ('class="sdel" data-del=', 'data-delclosed="1"', 'data-delall="1"', 'id="del"', 'if (!confirm(question)) return;',
                      '"/api/sessions/delete"', "state.tabs = state.tabs.filter(t => !gone.has(t.sid)); saveTabs();"):
             self.assertIn(want, html)
 
