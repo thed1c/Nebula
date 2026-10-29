@@ -12,8 +12,10 @@ Everything runs on your machine, and nothing leaves it unless you say so.
 
 > **Nebula is in testing.** Things may be rough around the edges. If something goes wrong, tell us (see [Getting help](#getting-help)). That's the whole point of testing.
 
-**New in 0.1.3:** one engine (Impulse) behind everything, Impulse Flash-Next for very large models (manual setup), opt-in long
-context up to 1M tokens, several requests at once, and updates that only happen when you say so.
+**New in 0.1.4:** smaller downloads (about 214 MB on Linux, 195 MB on Windows), with Halo running on Impulse on every
+machine and no llama.cpp in the installers; AMD Radeon and other graphics cards through Vulkan; small updates from now
+on; Qwen3.8 Flash-Next as a guided setup; **Flint 40B**, a coding model; answers that appear as they are written; and a
+round of fixes. The details are in the [changelog](CHANGELOG.md).
 
 ---
 
@@ -28,7 +30,9 @@ context up to 1M tokens, several requests at once, and updates that only happen 
   words, a summary before anything happens, and **Undo** after.
 - **Cancel really cancels.** Backing out of a wizard changes nothing.
 - **One download, one install.** A small installer brings the rest itself: Nebula, the Impulse engine, Halo's own
-  model, Lookup and its document reading. No administrator, nothing to compile.
+  model, Lookup and its document reading. No administrator, nothing to compile. Anything optional (Impulse portable
+  for a computer without an NVIDIA card, Impulse's Flash-Next engine) downloads only when you need it, and Nebula
+  says what it is, how big, and why before it does.
 
 ### Private
 
@@ -51,7 +55,8 @@ Your AI runs on **your** computer. Your chats, your documents and your history s
 |---|---|
 | You install Nebula | Downloads only, each checked against its known fingerprint where its maker publishes one: Python, Nebula's packages (from PyPI), Halo's own model and Lookup's search and document-reading models (from Hugging Face), Lookup's database program (Qdrant), NVIDIA OpenShell, and with an NVIDIA card, CUDA's libraries from NVIDIA. On Windows with the Safe sandbox: Ubuntu for WSL2 and Impulse's Linux build. |
 | You download a model | A download from Hugging Face, where the models live. |
-| You look for an update | One request to GitHub for a small signed file that names the newest version. Only when you press **Look now**, or once at start-up if you turned that on. |
+| Nebula needs an optional piece | A download from this project's GitHub releases, checked against its pinned fingerprint: Impulse portable (about 25 MB, only on a computer without an NVIDIA card) or Impulse's Flash-Next engine (about 105 MB, only when you set up Flash-Next). Nebula tells you first. |
+| You look for an update | One request to GitHub for a small signed file that names the newest version. Only when you press **Look now**, or once at start-up if you turned that on. The update itself downloads only when you click it. |
 | You turn on web search | Your search words, to Brave Search or DuckDuckGo. |
 | You add a cloud model (Anti-Gravity) | Whatever you send that model, to the company that runs it. Nebula marks these clearly. |
 | You share with a friend (Gravity) | Their requests and your model's answers, encrypted. They go directly on your home network, otherwise through a relay you run yourself, or through iroh's free public relays if you switch that on. A relay only passes along traffic it can't read. |
@@ -88,11 +93,11 @@ That's the whole list. If none of these are on, Nebula works with no internet at
 
 **On Linux:**
 
-1. Download **`nebula-eh-0.1.3-linux-x86_64.run`** from the [Releases page](../../releases).
+1. Download **`nebula-eh-0.1.4-linux-x86_64.run`** (about 214 MB) from the [Releases page](../../releases).
 2. Open a terminal in the folder where it downloaded and run:
 
    ```bash
-   sh nebula-eh-0.1.3-linux-x86_64.run
+   sh nebula-eh-0.1.4-linux-x86_64.run
    ```
 
    You don't need `sudo`. Nebula installs just for you, in your home folder. It fetches the rest as it goes (Python,
@@ -102,7 +107,7 @@ That's the whole list. If none of these are on, Nebula works with no internet at
 
 **On Windows:**
 
-1. Download **`Nebula-EH-Setup-0.1.3.exe`** from the [Releases page](../../releases).
+1. Download **`Nebula-EH-Setup-0.1.4.exe`** (about 195 MB) from the [Releases page](../../releases).
 2. Double-click it. It installs just for you and fetches the rest as it goes; it takes a few minutes.
 3. Setup asks **"Run your models in a Safe sandbox?"** Say **Yes** (it's the default). Each model then runs in its
    own container inside its own small Linux (Ubuntu 24.04 under WSL2), just like on Linux. If WSL2 isn't on yet,
@@ -277,6 +282,8 @@ Where it's less locked down, Nebula tells you, and here it is in one place:
 - **No sandbox on Linux without Docker or Podman, or on Windows if you said No** (or a setup step failed). The model
   still runs, as a normal program on your computer, with a warning in Nebula (and on your friend's side if you share
   it). **Engineering → System** says why.
+- **Models on an AMD Radeon or another non-NVIDIA card run without a sandbox**, directly on your computer, because a
+  sandbox can't reach that graphics card. Run a model's preview says so before you start.
 - **On Windows, the container is the whole sandbox.** Models are read-only to it and its port is reachable from this
   PC only, but OpenShell's network rules don't run on Windows yet, so the "no network at all" rule isn't enforced
   there.
@@ -294,35 +301,49 @@ Nebula never updates itself behind your back. In **Engineering → System → Up
 - **Off**: never, and the **Look now** button goes away.
 
 When there is a new version, a small **Update ready** shows at the top. Nebula only believes an update notice that
-we signed, and checks every download against its fingerprint. Nothing installs until you click. While the project's
-releases are private, the button just opens the release page for you.
+we signed, and checks every download against its fingerprint. Nothing installs until you click; then Nebula waits for
+any reply still on the way, updates, and opens again. (A Nebula you built from source just opens the release page.)
+
+**Small updates, from 0.1.4 on.** When only Nebula's own code changed, the update is a few MB instead of the whole
+installer, and the page says which one you'll get and how big it is. Coming from 0.1.3 or earlier, you get the whole
+installer once.
 
 ## Impulse: one engine
 
-Nebula comes with **Impulse 0.1.1**, our own engine, built in. It is now the one engine behind everything Nebula runs
-on an NVIDIA card: every tested model, Halo and the big setups below all run on the same Impulse. Before we moved our
-own setups over to it, we checked that each one gives exactly the same answers as the engine it replaced.
+Nebula comes with **Impulse**, our own engine, built in. It is the one engine behind everything Nebula runs: every
+tested model, Halo and the big setups below all run on the same Impulse. Before we moved our own setups over to it,
+we checked that each one gives exactly the same answers as the engine it replaced.
+
+- **On an NVIDIA card**, the full Impulse that comes in the installer.
+- **On any other card, or the CPU alone**, Impulse portable: a smaller build of Impulse that uses Vulkan (or the CPU)
+  instead of CUDA, a small download the first time it's needed. Halo runs on Impulse everywhere now, Windows included.
+- **Answers appear as they are written.** The thinking and the answer show word by word, and stopping a reply frees
+  the model at once.
+- **Flint 40B**, Recursive's coding model, runs on Impulse in two sizes (Q4 and Q6), each also as an uncensored
+  build. It runs on an 8 GB card with its experts in your computer's RAM; Nebula says how much RAM before it
+  downloads.
 
 **How fast?** On the same graphics card, in our tests, Impulse reads long prompts 2 to 7 times faster than llama.cpp
 and writes answers 1.1 to 1.8 times faster. To be fair about it: we ran llama.cpp with its own new expert cache
 switched off, so today the gap may be smaller. We haven't re-checked that yet.
 
-**Other engines.** llama.cpp's own server is still there as the reference: it runs any GGUF model you bring, and
-Nebula uses it by itself if Impulse can't run on your card. Any engine you have in a container image works too, from
-the **Engineering** tab.
+**Other engines.** Nebula no longer ships or needs llama.cpp's server, but you can still run it yourself as a
+reference from the **Engineering** tab, and any engine you have in a container image works there too.
 
 ## Advanced: big setups, CPU and memory
 
 Everything about your computer's CPU and memory (RAM) lives here, because you don't need it for the easy path. These
 are for people with a lot of memory and more than one graphics card. They are not in the easy model list.
 
-- **Impulse Flash-Next** runs very large expert models (Qwen3.8 Flash-Next packs) split across your graphics cards
-  and your computer's memory. **In 0.1.3 it's a manual setup only**, with no one-click wizard yet (that's planned for
-  0.1.4). You bring the model pack, build its container image (see
-  [impulse/flashnext/nebula-image/README.md](impulse/flashnext/nebula-image/README.md)), and define the engine
-  yourself in **Engineering**.
-  - **What it needs:** Linux with Docker or Podman, NVIDIA cards, a CPU with AVX2 (AVX-512 makes it faster), and a
-    lot of RAM: the model's experts alone take about 64 GB.
+- **Impulse Flash-Next** runs very large expert models (Qwen3.8 Flash-Next) split across your graphics cards and
+  your computer's memory. **It's a guided setup:** **Run a model › Qwen3.8 Flash-Next** asks for a Hugging Face
+  repository, checks that it really is a Flash-Next model, shows its sizes and which of them fit this computer, and
+  runs it on Impulse in a sandbox. Impulse's Flash-Next engine is a separate download (about 105 MB), fetched only
+  when you set one up, and the setup tells you first. A Flash-Next pack you already have on disk works too
+  (**Advanced**).
+  - **What it needs:** Linux with Docker or Podman, an NVIDIA card (it won't run on other cards, and says so), a CPU
+    with AVX2 (AVX-512 makes it faster), and a lot of RAM: the experts stay in RAM, so the bigger the size you pick,
+    the more it takes. The setup marks the sizes that don't fit.
   - **What we run it on:** two NVIDIA RTX 50 series cards (12 GB and 16 GB) and two server CPUs. That gives about
     100 tokens a second writing and about 2,000 a second reading. Smaller machines haven't been tried.
 - **Long context** (Flash-Next only) is an opt-in, **off by default**. In **Engineering**, a Flash-Next model can be set to
@@ -342,12 +363,13 @@ are for people with a lot of memory and more than one graphics card. They are no
 
 We'd rather you hear it from us:
 
-- **NVIDIA only** for models in this release. Mac isn't supported.
+- **NVIDIA cards get the most testing.** AMD Radeon and other cards are new in this release: they're slower, run
+  without a sandbox, and we've tested only one Radeon so far. Qwen3.8 Flash-Next needs NVIDIA. Mac isn't supported.
 - **In the code, but switched off and never tried between two real computers:** sending expert work to another
   computer over the network, splitting one model's layers across two computers, and the fast RDMA network link.
   They're there for the future; Nebula doesn't use them.
 - **Tested models only, out of the box.** The short list is what we've checked. You can add other GGUF models
-  yourself, and llama.cpp runs any of them, but we haven't tried them.
+  yourself, but we haven't tried them.
 
 ## Getting help
 
