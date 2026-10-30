@@ -24,12 +24,33 @@ class FakePulls:
 
 class HaloModelTest(unittest.TestCase):
     def test_manifest_and_assets(self):
-        m = HM.manifest()
-        self.assertEqual(HM.verify_assets(m), [])                       # the shipped adapters are the ones described
-        b = m["base"]
-        self.assertEqual(len(b["revision"]), 40)                        # a pinned commit, never "main"
-        self.assertEqual(len(b["sha256"]), 64)
+        for m in HM.models():                                           # Halo v3.1 (LFM3) and Halo v2 (LFM2.5)
+            self.assertEqual(HM.verify_assets(m), [], m["id"])          # the shipped adapters are the ones described
+            b = m["base"]
+            self.assertEqual(len(b["revision"]), 40)                    # a pinned commit, never "main"
+            self.assertEqual(len(b["sha256"]), 64)
         self.assertTrue((HM.ASSETS / "LICENSE-LFM-1.0").is_file())
+        self.assertEqual([m["id"] for m in HM.models()], ["halo-lfm3-1.7b", "halo-lfm25-1.2b"])
+        self.assertEqual(HM.manifest()["id"], "halo-lfm3-1.7b")         # the default
+
+    def test_the_runtime_picks_the_model(self):
+        """The owner's 2026-10-30 pick: Impulse's CUDA build (an NVIDIA card) runs LFM3; Impulse portable (Vulkan, no NVIDIA
+        card) and llama-server stay on LFM2.5 until LFM3 runs there."""
+        self.assertEqual(HM.model_for("Impulse"), "halo-lfm3-1.7b")
+        for rt in ("Impulse portable", "llama.cpp", "halo-server", None, "something else"):
+            self.assertEqual(HM.model_for(rt), "halo-lfm25-1.2b", rt)
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"NEBULA_HALO_MODEL": "halo-lfm25-1.2b"}):
+            self.assertEqual(HM.model_for("Impulse"), "halo-lfm25-1.2b")
+        with mock.patch.dict(os.environ, {"NEBULA_HALO_MODEL": "nope"}), self.assertRaises(KeyError):
+            HM.model_for("Impulse")
+
+    def test_lfm3_runs_with_thinking_off(self):
+        a = HM.server_args("/models", "standard", "gpu:0", m=HM.manifest(model="halo-lfm3-1.7b"))
+        self.assertEqual(a[a.index("--reasoning") + 1], "off")          # LFM3 thinks by default; Halo's jobs want none
+        self.assertNotIn("--reasoning", HM.server_args("/models", "standard", "gpu:0", m=HM.manifest(model="halo-lfm25-1.2b")))
+        self.assertIn("LFM3-1.7B-QAD-Q4_0.gguf", a[a.index("-m") + 1])
 
     def test_ensure_base_pulls_pinned_with_sha(self):
         d = tempfile.mkdtemp()
@@ -57,6 +78,10 @@ class HaloModelTest(unittest.TestCase):
     def test_server_args(self):
         a = HM.server_args("/models", "uncensored", "gpu:0", port=18500)
         lora = a[a.index("--lora-scaled") + 1]
+        self.assertIn("halo-lfm3-v3.1-r16-lora-f16.gguf:1.0,", lora)
+        self.assertTrue(lora.endswith("halo-lfm3-uncensored-t43-lora-f16.gguf:1.0"))
+        v2 = HM.server_args("/models", "uncensored", "gpu:0", port=18500, m=HM.manifest(model="halo-lfm25-1.2b"))
+        lora = v2[v2.index("--lora-scaled") + 1]
         self.assertIn("halo-guard-v2-lora-f16.gguf:1.0,", lora)
         self.assertTrue(lora.endswith("halo-uncensored-heretic-t198-lora-f16.gguf:1.0"))
         self.assertIn("-ngl", a); self.assertEqual(a[a.index("-ngl") + 1], "99")

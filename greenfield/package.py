@@ -12,7 +12,7 @@ It builds the payload every installer carries, with nothing needed from the user
              guided setup
   Halo       runs on impulse/ with an NVIDIA card; without one on Impulse portable (CPU + Vulkan), which is not inside:
              downloaded on such a machine only (the owner's 2026-10-27 word: "keep the downloads as small as possible";
-             nebula/catalog/pieces.json). Its base model (Liquid's LFM2.5-1.2B QAD Q4_0, 0.7 GB) is not inside
+             nebula/catalog/pieces.json). Its base model (Liquid's QAD Q4_0: LFM3-1.7B, 1.0 GB, with an NVIDIA card; LFM2.5-1.2B, 0.7 GB, without) is not inside
              either: the installer fetches it while it unpacks the rest (design decision 10-21), checked against the
              sha256 in nebula/catalog/halo.json; with no network then, Nebula fetches it when it starts. --halo-base puts
              it inside instead (halo/, an offline installer).
@@ -76,8 +76,15 @@ def site_packages(py: Path, plat: str) -> Path:
     return py / "Lib" / "site-packages" if plat == "windows" else py / "lib" / "python3.12" / "site-packages"
 
 
+def halo_bases() -> list[dict]:
+    """Every Halo model's base (nebula/catalog/halo.json), the default (LFM3, NVIDIA) first."""
+    c = json.loads((ROOT / "nebula" / "catalog" / "halo.json").read_text())
+    ms = c.get("models") or [c]
+    return [m["base"] for m in sorted(ms, key=lambda m: m["id"] != c.get("default"))]
+
+
 def halo_base() -> dict:
-    return json.loads((ROOT / "nebula" / "catalog" / "halo.json").read_text())["base"]
+    return halo_bases()[0]
 
 
 # llama.cpp and ggml share one MIT licence text, "Copyright (c) 2023-2026 The ggml authors"
@@ -85,10 +92,11 @@ LLAMA_LICENSE = ROOT / "impulse" / "flashnext" / "third_party" / "ggml" / "LICEN
 
 
 def add_halo(pay: Path, base: Path) -> None:
-    """halo/: Halo's base model, for an offline installer (else it is fetched at install). Its runtime is Impulse."""
-    m = halo_base()
-    if base.stat().st_size != m["bytes"] or hashlib.sha256(base.read_bytes()).hexdigest() != m["sha256"]:
-        raise SystemExit(f"{base}: not Halo's base model (size or sha256 differs from nebula/catalog/halo.json)")
+    """halo/: one of Halo's base models, for an offline installer (else the one the machine runs is fetched at install)."""
+    digest = hashlib.sha256(base.read_bytes()).hexdigest()
+    m = next((b for b in halo_bases() if base.stat().st_size == b["bytes"] and digest == b["sha256"]), None)
+    if m is None:
+        raise SystemExit(f"{base}: not one of Halo's base models (size or sha256 differs from nebula/catalog/halo.json)")
     h = pay / "halo"
     h.mkdir()
     shutil.copy2(base, h / m["file"])
@@ -225,15 +233,21 @@ say() { printf '%s\n' "$*"; [ -z "$QUIET" ] && command -v notify-send >/dev/null
 say "Installing Nebula EH __VERSION__…"
 SKIP=$(awk '/^__PAYLOAD__$/ { print NR + 1; exit }' "$0")
 mkdir -p "$DATA" "$CONF"
-# Halo's model is fetched while the rest unpacks (its sha256 checked); Nebula fetches it at start if this cannot
-HALO_REL="__HALO_REL__"; HALO_PID=""
+# Halo's model is fetched while the rest unpacks (its sha256 checked); Nebula fetches it at start if this cannot. Only the one
+# this machine runs: LFM3-1.7B (Halo v3.1, Impulse) with an NVIDIA card, LFM2.5-1.2B (Halo v2, Impulse portable) without one
+if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
+  HALO_REL="__HALO_REL__"; HALO_URL="__HALO_URL__"; HALO_SHA="__HALO_SHA__"; HALO_WHAT="__HALO_WHAT__"
+else
+  HALO_REL="__HALO2_REL__"; HALO_URL="__HALO2_URL__"; HALO_SHA="__HALO2_SHA__"; HALO_WHAT="__HALO2_WHAT__"
+fi
+HALO_PID=""
 if [ -n "$HALO_REL" ] && [ ! -f "$CONF/$HALO_REL" ] && { command -v curl || command -v wget; } >/dev/null 2>&1; then
-  say "Fetching Halo's model (0.7 GB) while the rest installs…"
+  say "Fetching Halo's model ($HALO_WHAT) while the rest installs…"
   mkdir -p "$(dirname "$CONF/$HALO_REL")"
   ( P="$CONF/$HALO_REL.part"
-    if command -v curl >/dev/null 2>&1; then curl -fsSL --retry 3 --connect-timeout 15 -C - -o "$P" "__HALO_URL__" || exit 1
-    else wget -q -c -T 15 -t 3 -O "$P" "__HALO_URL__" || exit 1; fi
-    [ "$(sha256sum "$P" | cut -d' ' -f1)" = "__HALO_SHA__" ] || { rm -f "$P"; echo "sha256 differs"; exit 1; }
+    if command -v curl >/dev/null 2>&1; then curl -fsSL --retry 3 --connect-timeout 15 -C - -o "$P" "$HALO_URL" || exit 1
+    else wget -q -c -T 15 -t 3 -O "$P" "$HALO_URL" || exit 1; fi
+    [ "$(sha256sum "$P" | cut -d' ' -f1)" = "$HALO_SHA" ] || { rm -f "$P"; echo "sha256 differs"; exit 1; }
     mv "$P" "$CONF/$HALO_REL" ) > "$CONF/halo-download.log" 2>&1 &
   HALO_PID=$!
 fi
@@ -359,13 +373,16 @@ def make_run(pay: Path, out: Path) -> Path:
             for p in sorted(pay.iterdir()):
                 t.add(p, arcname=p.name)
         with open(dest, "wb") as f:
-            hb = halo_base()
-            fetch = not (pay / "halo" / hb["file"]).exists()                    # fetched at install unless it is inside
-            rel = f"models/{hb['repo']}/{hb['file']}" if fetch else ""      # hf.Pulls' layout under the config's folder
-            url = f"https://huggingface.co/{hb['repo']}/resolve/{hb['revision']}/{hb['file']}"
             online = json.loads((pay / "online.json").read_text()) if (pay / "online.json").exists() else {}
-            f.write(RUN_HEADER.replace("__VERSION__", ver).replace("__HALO_REL__", rel).replace("__HALO_URL__", url)
-                    .replace("__HALO_SHA__", hb["sha256"]).replace("__PY_URL__", online.get("python_url", ""))
+            head = RUN_HEADER
+            for tag, hb, what in (("HALO", halo_bases()[0], "for this NVIDIA card: Halo v3.1"), ("HALO2", halo_bases()[-1], "no NVIDIA card here: Halo v2")):
+                fetch = not (pay / "halo" / hb["file"]).exists()                    # fetched at install unless it is inside
+                rel = f"models/{hb['repo']}/{hb['file']}" if fetch else ""      # hf.Pulls' layout under the config's folder
+                url = f"https://huggingface.co/{hb['repo']}/resolve/{hb['revision']}/{hb['file']}"
+                what = f"{hb['file'].split('-QAD')[0]}, {hb['bytes'] / 1e9:.1f} GB, {what}"
+                head = (head.replace(f"__{tag}_REL__", rel).replace(f"__{tag}_URL__", url).replace(f"__{tag}_SHA__", hb["sha256"])
+                        .replace(f"__{tag}_WHAT__", what))
+            f.write(head.replace("__VERSION__", ver).replace("__PY_URL__", online.get("python_url", ""))
                     .replace("__PY_SHA__", online.get("python_sha256", "")).replace("__WHEEL__", online.get("wheel", ""))
                     .replace("__EXTRAS__", online.get("extras", "") or EXTRAS["linux"])
                     .replace("__EXTRA_INDEX_URL__", online.get("extra_index", "") or "")
@@ -383,7 +400,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--platform", choices=["linux", "windows"], required=True)
     ap.add_argument("--impulse", type=Path, help="a folder with impulse-server (and its libraries) for that platform")
-    ap.add_argument("--halo-base", type=Path, help="Halo's base model file (LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf)")
+    ap.add_argument("--halo-base", type=Path, help="one of Halo's base model files (LFM3-1.7B-QAD-Q4_0.gguf or LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf)")
     ap.add_argument("--pair-bin", type=Path, help="PAIR's services (services/build/bin of NVIDIA/Personal-AI-Router)")
     ap.add_argument("--pair-src", type=Path, help="PAIR's source, for its LICENSE and notices")
     ap.add_argument("--sandbox-impulse", type=Path, help="Windows: Impulse's Linux build (impulse-<v>-linux-x86_64.tar.gz) the Safe sandbox fetches from the release")

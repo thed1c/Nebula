@@ -217,7 +217,7 @@ class HaloModelLinkTest(unittest.TestCase):
 
     def test_nebula_starts_and_halo_runs_from_the_link(self):
         from nebula import halo_model as HM
-        m = HM.manifest()
+        m = HM.manifest(model=HM.model_for("halo-server"))             # the model the test's runtime (a llama-server) runs
         tmp = tempfile.mkdtemp()
         fake = os.path.join(tmp, "fake_llama_server.py")
         Path(fake).write_text(FAKE)
@@ -520,3 +520,116 @@ class HaloWhereTest(unittest.TestCase):
             self.srv.halo_engine.restart()
             self.wait()
         self.assertEqual(self.srv.halo_engine.view()["why"], "no NVIDIA GPU on this machine: on the CPU")
+
+
+class HaloModelChoiceTest(unittest.TestCase):
+    """The owner's 2026-10-30 pick ("Switch on NVIDIA now"): Impulse (an NVIDIA card) runs Halo v3.1 on LFM3; Impulse portable
+    stays on Halo v2 (LFM2.5). An NVIDIA machine with only v2's file runs v2 at once, fetches LFM3's file and moves to it; a
+    download that fails, or an Impulse that cannot run LFM3, leaves Halo v2 running."""
+
+    def setUp(self):
+        import hashlib
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from nebula import halo_model
+        self.tmp = tempfile.mkdtemp()
+        self.blobs = {"lfm3": b"GGUF3" + b"x" * 4000, "lfm25": b"GGUF2" + b"y" * 3000}
+        cat = json.loads(halo_model.MANIFEST.read_text())
+        for m, key in zip(cat["models"], ("lfm3", "lfm25")):
+            b = self.blobs[key]
+            m["base"] = {"repo": f"t/{key}", "revision": "r1", "file": f"{key}.gguf", "bytes": len(b), "sha256": hashlib.sha256(b).hexdigest()}
+        self.man = os.path.join(self.tmp, "halo.json")
+        Path(self.man).write_text(json.dumps(cat))
+        self.hub_down = False
+        test = self
+
+        class Hub(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                key = self.path.split("/")[2] if self.path.count("/") >= 3 else ""
+                if test.hub_down or key not in test.blobs:
+                    self.send_response(503); self.end_headers(); return
+                b = test.blobs[key]
+                self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+        self.hub = ThreadingHTTPServer(("127.0.0.1", 0), Hub)
+        threading.Thread(target=self.hub.serve_forever, daemon=True).start()
+        self.fake = os.path.join(self.tmp, "fake_impulse.py")
+        Path(self.fake).write_text(FAKE)
+        self.models = os.path.join(self.tmp, "models")
+        self.engine = FakeEngine("small")
+        self.path = os.path.join(self.tmp, "nebula.json")
+        json.dump({"port": free_port(), "ledger": os.path.join(self.tmp, "l.sqlite3"), "monitor": False, "models_dir": self.models,
+                   "tiers": [{"name": "small", "engine": self.engine.url}]}, open(self.path, "w"))
+        self.addCleanup(self.engine.stop); self.addCleanup(self.hub.shutdown)
+
+    def put(self, key):
+        p = Path(self.models, "t", key, f"{key}.gguf")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(self.blobs[key])
+        return str(p)
+
+    def run_with(self, runtimes, wait_for):
+        from nebula import halo_engine as HE, halo_model
+        env = {"NEBULA_HALO_SERVER": "", "NEBULA_FAKE_CARDS": "[]", "HF_ENDPOINT": f"http://127.0.0.1:{self.hub.server_port}"}
+        nvidia = runtimes[0][0] == "Impulse"                                   # Impulse's CUDA build: an NVIDIA card here
+        with mock.patch.dict(os.environ, env), mock.patch.object(halo_model, "MANIFEST", Path(self.man)), \
+                mock.patch.object(HE, "find_servers", return_value=runtimes), mock.patch.object(HE.HaloEngine, "RETRY_S", 0.5), \
+                mock.patch.object(HE, "has_nvidia", return_value=nvidia), mock.patch("nebula.pieces.pin", return_value=None):
+            os.environ.pop("NEBULA_HALO_BASE", None)
+            os.environ.pop("NEBULA_HALO_MODEL", None)
+            srv = make_server(Config.from_args(["--config", self.path]))
+            self.addCleanup(lambda: (srv.halo_engine.close(), srv.server_close(), srv.tools.close()))
+            end = time.time() + 30
+            while not wait_for(srv.halo_engine) and time.time() < end:
+                time.sleep(0.2)
+            return srv.halo_engine
+
+    def args(self):
+        return [json.loads(x)["args"] for x in Path(self.fake + ".log").read_text().splitlines() if '"args"' in x]
+
+    def test_nvidia_runs_lfm3_with_thinking_off(self):
+        base = self.put("lfm3")
+        eng = self.run_with([("Impulse", [sys.executable, self.fake])], lambda e: e.ready())
+        self.assertTrue(eng.ready(), eng.view())
+        self.assertEqual(eng.view()["model"], "halo-lfm3-1.7b")
+        a = self.args()[-1]
+        self.assertEqual(a[a.index("-m") + 1], base)
+        self.assertIn("halo-lfm3-v3.1-r16-lora-f16.gguf:1.0", a[a.index("--lora-scaled") + 1])
+        self.assertEqual(a[a.index("--reasoning") + 1], "off")
+
+    def test_an_update_runs_v2_then_moves_to_lfm3(self):
+        self.put("lfm25")                                                      # Nebula 0.1.4 fetched v2's file
+        eng = self.run_with([("Impulse", [sys.executable, self.fake])],
+                            lambda e: e.ready() and (e.view().get("model") == "halo-lfm3-1.7b"))
+        self.assertTrue(eng.ready(), eng.view())
+        self.assertEqual(eng.view()["model"], "halo-lfm3-1.7b")                # moved once LFM3's file checked out
+        self.assertEqual(Path(self.models, "t", "lfm3", "lfm3.gguf").read_bytes(), self.blobs["lfm3"])
+        first, last = self.args()[0], self.args()[-1]
+        self.assertIn("halo-guard-v2-lora-f16.gguf:1.0", first[first.index("--lora-scaled") + 1])     # v2 ran meanwhile
+        self.assertNotIn("--reasoning", first)
+        self.assertIn("halo-lfm3-v3.1-r16-lora-f16.gguf:1.0", last[last.index("--lora-scaled") + 1])
+
+    def test_a_failed_download_keeps_v2(self):
+        self.put("lfm25")
+        self.hub_down = True
+        eng = self.run_with([("Impulse", [sys.executable, self.fake])], lambda e: e.ready() and "could not" in ((e.view().get("upgrade") or {}).get("why") or ""))
+        self.assertTrue(eng.ready(), eng.view())
+        self.assertEqual(eng.view()["model"], "halo-lfm25-1.2b")
+        self.assertIn("Halo v2 runs", eng.view()["upgrade"]["why"])
+
+    def test_an_impulse_that_cannot_run_lfm3_leaves_v2(self):
+        self.put("lfm3"); self.put("lfm25")
+        broken = [sys.executable, "-c", "import sys; sys.exit(3)"]
+        eng = self.run_with([("Impulse", broken), ("llama.cpp", [sys.executable, self.fake])], lambda e: e.ready() or e.state == "failed")
+        self.assertTrue(eng.ready(), eng.view())
+        self.assertEqual((eng.view()["model"], eng.view()["runtime"]), ("halo-lfm25-1.2b", "llama.cpp"))
+
+    def test_no_nvidia_stays_on_v2(self):
+        self.put("lfm3"); base = self.put("lfm25")
+        eng = self.run_with([("Impulse portable", [sys.executable, self.fake])], lambda e: e.ready())
+        self.assertTrue(eng.ready(), eng.view())
+        self.assertEqual(eng.view()["model"], "halo-lfm25-1.2b")
+        a = self.args()[-1]
+        self.assertEqual(a[a.index("-m") + 1], base)
+        self.assertNotIn("--reasoning", a)

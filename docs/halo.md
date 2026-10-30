@@ -46,10 +46,20 @@ API: `GET /api/halo`; `POST /api/halo {on, route}`, `/api/halo/actions/<id>/undo
 
 ## Halo's own model
 
-Halo can run its own small model instead of the Assistant's (`nebula/halo_model.py`, `nebula/catalog/halo.json`): Liquid AI's
-**LFM2.5-1.2B-Instruct**, the makers' QAD Q4_0 file (0.7 GB), fetched at first run from Liquid's repository at a pinned revision
-and checked against its sha256, plus two LoRA adapters that ship with Nebula in `nebula/assets/halo/` (F16, LFM Open License
-v1.0; what they change is in that folder's README):
+Halo can run its own small model instead of the Assistant's (`nebula/halo_model.py`, `nebula/catalog/halo.json`): one of two
+Liquid AI models, the makers' QAD Q4_0 file fetched from Liquid's repository at a pinned revision and checked against its sha256,
+plus two LoRA adapters each that ship with Nebula in `nebula/assets/halo/` (F16, LFM Open License v1.0; what they change is in
+that folder's README). Which one depends on what runs it (the owner's 2026-10-30 pick):
+
+- **Halo v3.1 on LFM3-1.7B** (1.0 GB) with an NVIDIA card (Impulse): a better router judge and handoff briefings than v2, at
+  about 1.5x its time per call. Its server runs with `--reasoning off` (LFM3 thinks by default; Halo's jobs want none).
+- **Halo v2 on LFM2.5-1.2B-Instruct** (0.7 GB) without one (Impulse portable: a Radeon or another card through Vulkan, or the
+  CPU), and with a `llama-server` of your own, until LFM3 runs there.
+
+A machine fetches only the model it runs (the installer while it unpacks, or Nebula at start), and says which and why. An NVIDIA
+machine that already has Halo v2's file (an update from 0.1.4) keeps Halo v2 running while LFM3's file downloads, then moves to
+it; when that download fails, or the Impulse there cannot run LFM3 yet, Halo v2 stays. `NEBULA_HALO_MODEL` forces one
+(`halo-lfm3-1.7b`, `halo-lfm25-1.2b`).
 
 - **Standard**: the base + the Halo adapter (the guard, the router judge, handoff briefings).
 - **Uncensored**: the same + the Uncensored adapter. Both are always loaded; the setting is the second adapter's scale (0 or 1),

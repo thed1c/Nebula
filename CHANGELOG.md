@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.5
+
+**Halo upgraded to LFM3.** With an NVIDIA card, Halo, Nebula's helper model, now runs Liquid AI's LFM3-1.7B with new
+adapters (Halo v3.1): a better router judge, handoff briefings that invent nothing, and the Uncensored option, at about
+1.5x the time per call of Halo v2. Its licence (LFM Open License v1.0) ships with Nebula.
+Without an NVIDIA card (a Radeon through Vulkan, or the CPU), Halo stays on v2 (LFM2.5-1.2B) until LFM3 runs there.
+Each machine downloads only the model it runs (1.0 GB for LFM3, 0.7 GB for LFM2.5) and says which and why. After an
+update, Halo v2 keeps running while LFM3 downloads, then Halo moves to it; if the download fails, Halo v2 stays.
+Impulse runs LFM3 natively (its sliding-window layers in a cache of their own), and its server takes llama-server's
+`--reasoning` and `--chat-template-kwargs`.
+
 ## 0.1.4
 
 **Smaller downloads.** The installers no longer carry llama-server: Halo, Nebula's helper model, runs on Impulse on

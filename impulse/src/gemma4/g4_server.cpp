@@ -936,7 +936,7 @@ int main(int argc, char ** argv) {
 int main(int argc, char ** argv) {
     if (fx::engine_for(fx::model_arg(argc, argv)) == "fx") return exec_fx_front(argc, argv);
 #ifndef _WIN32
-    if (const auto arch = g4srv::model_architecture(argc, argv); arch == "qwen35moe" || arch == "qwen35" || arch == "lfm2moe" || arch == "lfm2" || arch == "qwen4exp" || arch == "flint") g4srv::exec_qwen_server(argc, argv);
+    if (const auto arch = g4srv::model_architecture(argc, argv); arch == "qwen35moe" || arch == "qwen35" || arch == "lfm2moe" || arch == "lfm2" || arch == "lfm3" || arch == "qwen4exp" || arch == "flint") g4srv::exec_qwen_server(argc, argv);
 #endif
     return g4srv::run(argc, argv);
 }

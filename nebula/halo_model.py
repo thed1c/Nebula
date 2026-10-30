@@ -1,6 +1,11 @@
-"""nebula/halo_model.py: Halo's own model (nebula/catalog/halo.json): Liquid's LFM2.5-1.2B QAD Q4_0 file, unchanged, plus
-Nebula's two LoRA adapters shipped in nebula/assets/halo/ (docs/halo.md).
+"""nebula/halo_model.py: Halo's own models (nebula/catalog/halo.json): Liquid's QAD Q4_0 files, unchanged, plus Nebula's two
+LoRA adapters for each, shipped in nebula/assets/halo/ (docs/halo.md). Impulse's CUDA build (an NVIDIA card) runs Halo v3.1 on
+LFM3-1.7B; Impulse portable (Vulkan / the CPU without an NVIDIA card) and llama-server run Halo v2 on LFM2.5-1.2B, which is
+also an NVIDIA machine's model while LFM3's file is not there yet (the owner's 2026-10-30 pick: "Switch on NVIDIA now").
 
+    manifest(model=)                    -> one model's entry (default: the catalog's "default"), the catalog's licence with it
+    models()                            -> every model's entry, the default first
+    model_for(runtime)                  -> the id of the model a runtime runs (NEBULA_HALO_MODEL forces one)
     verify_assets()                     -> [] or what is wrong with the shipped adapters (missing, size, sha256)
     base_path(models_dir)               -> where the base file lives (hf.Pulls' layout)
     ensure_base(pulls)                  -> None when the base is there and checks out, else a pull id (pinned revision, sha256)
@@ -26,8 +31,45 @@ ASSETS = HERE / "assets" / "halo"
 VARIANTS = ("standard", "uncensored")
 
 
-def manifest(path: str | None = None) -> dict:
+def _catalog(path: str | None = None) -> dict:
     return json.loads(Path(path or MANIFEST).read_text(encoding="utf-8"))
+
+
+def manifest(path: str | None = None, model: str | None = None) -> dict:
+    """One model's entry (its id, base, adapters, server), the catalog's licence with it; model None = the catalog's default.
+    A catalog with no "models" list (one model, Nebula 0.1.4's form) is that model."""
+    c = _catalog(path)
+    if "models" not in c:
+        return c
+    want = model or c.get("default") or c["models"][0]["id"]
+    for m in c["models"]:
+        if m["id"] == want:
+            return {**m, "license": c.get("license", "")}
+    raise KeyError(f"Halo has no model {want!r} (nebula/catalog/halo.json)")
+
+
+def models(path: str | None = None) -> list[dict]:
+    """Every model's entry, the default first."""
+    c = _catalog(path)
+    if "models" not in c:
+        return [c]
+    d = c.get("default")
+    return [manifest(path, m["id"]) for m in sorted(c["models"], key=lambda m: m["id"] != d)]
+
+
+def model_for(runtime: str | None, path: str | None = None) -> str:
+    """The id of the model `runtime` runs: the first model (the default first) whose "runtimes" names it; NEBULA_HALO_MODEL
+    forces one. Impulse's CUDA build -> LFM3; Impulse portable, llama.cpp, a server of the owner's (halo-server) -> LFM2.5."""
+    env = os.environ.get("NEBULA_HALO_MODEL")
+    ms = models(path)
+    if env:
+        if not any(m["id"] == env for m in ms):
+            raise KeyError(f"NEBULA_HALO_MODEL={env}: Halo has no such model")
+        return env
+    for m in ms:
+        if runtime in (m.get("runtimes") or []):
+            return m["id"]
+    return ms[-1]["id"]                                  # an unknown runtime: the model every llama-server runs
 
 
 def _sha256(path: Path) -> str:
@@ -110,7 +152,7 @@ def server_args(models_dir: str, variant: str = "standard", where: str = "cpu", 
     slots, ctx = (s["router_lane"]["slots"], s["router_lane"]["context"]) if lane == "router" else (s["slots"], s["context"])
     args = ["-m", base or base_path(models_dir, m),
             "--lora-scaled", f"{ASSETS / halo['file']}:{halo['scale']},{ASSETS / unc['file']}:{unc['scale'][variant]}",
-            "-c", str(ctx), "-np", str(slots), "--jinja", "--no-webui"]
+            "-c", str(ctx), "-np", str(slots), "--jinja", "--no-webui", *s.get("flags", [])]   # LFM3: --reasoning off (it thinks by default)
     if where.startswith("gpu"):
         args += ["-ngl", "99"]
     else:

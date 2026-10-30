@@ -1,35 +1,100 @@
 {
- "_note": "Halo's model: Liquid AI's own QAD Q4_0 file of LFM2.5-1.2B-Instruct, fetched at first run (pinned revision, sha256 checked), plus Nebula's two LoRA adapters shipped in nebula/assets/halo/ (F16). Standard = base + the Halo adapter; Uncensored = the same + the Heretic adapter at scale 1. Placement (the owner's 2026-10-21 order): a spare GPU, else spare VRAM on an engine's card (only what stays free after the engines sized their caches), else the CPU (always warm, capped threads, nice, its own router lane).",
- "id": "halo-lfm25-1.2b",
- "name": "Halo (LFM2.5 1.2B)",
- "maker": "Liquid AI (adapters by Nebula)",
+ "_note": "Halo's models: Liquid AI's own QAD Q4_0 files, fetched (pinned revision, sha256 checked) only for the model the machine runs, plus Nebula's LoRA adapters shipped in nebula/assets/halo/ (F16). Impulse's CUDA build (an NVIDIA card) runs halo-lfm3-1.7b; Impulse portable (Vulkan, no NVIDIA card) and llama-server run halo-lfm25-1.2b, which is also the NVIDIA machine's fallback while LFM3's file is not here. Standard = base + the Halo adapter; Uncensored = the same + the Uncensored adapter at scale 1. Placement (the owner's 2026-10-21 order): a spare GPU, else spare VRAM on an engine's card (only what stays free after the engines sized their caches), else the CPU (always warm, capped threads, nice, its own router lane).",
  "license": "LFM Open License v1.0 (nebula/assets/halo/LICENSE-LFM-1.0)",
- "base": {
-  "repo": "LiquidAI/LFM2.5-1.2B-Instruct-GGUF",
-  "revision": "8ed288026e23958ad9dfa92d53ed773a8eee7125",
-  "file": "LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf",
-  "sha256": "bb741ebb106d543e9de114b843a3d3d73d51c74b5801e69da2abde821a0cb3e1",
-  "bytes": 695755488
- },
- "adapters": {
-  "halo": {
-   "file": "halo-guard-v2-lora-f16.gguf",
-   "sha256": "874aaad4bbacd81bd4d8ecd6c4da5391369467ad8513bab18ed29836c82c56e6",
-   "bytes": 22230336,
-   "scale": 1.0
+ "default": "halo-lfm3-1.7b",
+ "models": [
+  {
+   "id": "halo-lfm3-1.7b",
+   "name": "Halo (LFM3 1.7B)",
+   "maker": "Liquid AI (adapters by Nebula)",
+   "why": "Halo v3.1 on LFM3-1.7B: Impulse's CUDA build (an NVIDIA card, or the CPU through it); a better router and handoff briefings than v2, ~1.5x its time per call",
+   "base": {
+    "repo": "LiquidAI/LFM3-1.7B-GGUF",
+    "revision": "bad5729bba61d076fff20d2548e62526665af215",
+    "file": "LFM3-1.7B-QAD-Q4_0.gguf",
+    "sha256": "43a7d09a0e9cba91b63eb7052488b9564569bddfd65754d2e426465e572a7452",
+    "bytes": 1049615680
+   },
+   "adapters": {
+    "halo": {
+     "file": "halo-lfm3-v3.1-r16-lora-f16.gguf",
+     "sha256": "8911d253f4aaf69b4fdeec4670ae926954a9eb7d6c5e68613269b1eb43d51fc9",
+     "bytes": 32959040,
+     "scale": 1.0
+    },
+    "uncensored": {
+     "file": "halo-lfm3-uncensored-t43-lora-f16.gguf",
+     "sha256": "7dbbd66e6f031d94bc236dabd3236321bb66a570d1dcf409ee3274975de80064",
+     "bytes": 452672,
+     "scale": {
+      "standard": 0.0,
+      "uncensored": 1.0
+     }
+    }
+   },
+   "server": {
+    "context": 32768,
+    "slots": 4,
+    "router_lane": {
+     "slots": 1,
+     "context": 4096
+    },
+    "gpu_mb": 1700,
+    "cpu_threads": 4,
+    "flags": [
+     "--reasoning",
+     "off"
+    ]
+   },
+   "runtimes": [
+    "Impulse"
+   ]
   },
-  "uncensored": {
-   "file": "halo-uncensored-heretic-t198-lora-f16.gguf",
-   "sha256": "9ed0455c7de199b34ab2264dc9ef7a85bde3f35debcd757fcd6bde66a44916db",
-   "bytes": 1381792,
-   "scale": {"standard": 0.0, "uncensored": 1.0}
+  {
+   "id": "halo-lfm25-1.2b",
+   "name": "Halo (LFM2.5 1.2B)",
+   "maker": "Liquid AI (adapters by Nebula)",
+   "base": {
+    "repo": "LiquidAI/LFM2.5-1.2B-Instruct-GGUF",
+    "revision": "8ed288026e23958ad9dfa92d53ed773a8eee7125",
+    "file": "LFM2.5-1.2B-Instruct-QAD-Q4_0.gguf",
+    "sha256": "bb741ebb106d543e9de114b843a3d3d73d51c74b5801e69da2abde821a0cb3e1",
+    "bytes": 695755488
+   },
+   "adapters": {
+    "halo": {
+     "file": "halo-guard-v2-lora-f16.gguf",
+     "sha256": "874aaad4bbacd81bd4d8ecd6c4da5391369467ad8513bab18ed29836c82c56e6",
+     "bytes": 22230336,
+     "scale": 1.0
+    },
+    "uncensored": {
+     "file": "halo-uncensored-heretic-t198-lora-f16.gguf",
+     "sha256": "9ed0455c7de199b34ab2264dc9ef7a85bde3f35debcd757fcd6bde66a44916db",
+     "bytes": 1381792,
+     "scale": {
+      "standard": 0.0,
+      "uncensored": 1.0
+     }
+    }
+   },
+   "server": {
+    "context": 32768,
+    "slots": 4,
+    "router_lane": {
+     "slots": 1,
+     "context": 4096
+    },
+    "gpu_mb": 1400,
+    "cpu_threads": 4
+   },
+   "runtimes": [
+    "Impulse portable",
+    "llama.cpp",
+    "halo-server",
+    "Impulse"
+   ],
+   "why": "Halo v2 on LFM2.5-1.2B: the model for Impulse portable (a Radeon or another card through Vulkan, or the CPU without an NVIDIA card) and llama-server, and the fallback on an NVIDIA machine while LFM3 is not here"
   }
- },
- "server": {
-  "context": 32768,
-  "slots": 4,
-  "router_lane": {"slots": 1, "context": 4096},
-  "gpu_mb": 1400,
-  "cpu_threads": 4
- }
+ ]
 }

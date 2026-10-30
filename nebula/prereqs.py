@@ -144,17 +144,21 @@ def cuda(dest: str | None = None) -> str:
     return msg
 
 
-# --- Halo's own model (the Linux installer fetches it while it unpacks; this fetches it where that did not happen)
+# --- Halo's own model (the Linux installer fetches it while it unpacks; this fetches it where that did not happen). Only the
+# model this machine's runtime runs (halo_model.model_for): LFM3-1.7B with an NVIDIA card (Impulse), LFM2.5-1.2B without one
 def halo_model(cfg) -> str:
     from nebula import halo_model as hm, halo_engine
     from nebula.hf import Pulls
     import time
     models = (cfg.raw or {}).get("models_dir") or "models"
     models = models if os.path.isabs(models) else os.path.join(cfg.base_dir or os.getcwd(), models)
-    m = hm.manifest()
+    runtimes = halo_engine.find_servers(cfg.base_dir)
+    m = hm.manifest(model=hm.model_for(runtimes[0][0] if runtimes else None))
+    what = (f"{m['base']['file'].split('-QAD')[0]}, {int(m['base']['bytes']) / 1e9:.1f} GB, "
+            + ("no NVIDIA card here, so Halo v2 (Impulse portable)" if "Impulse portable" in (m.get("runtimes") or []) else "for this NVIDIA card (Halo v3.1)"))
     found = halo_engine.find_base(models, m)
     if found and hm._sha256(Path(found)) == m["base"]["sha256"]:     # the pinned file, not just one of its size
-        return "Halo's model: already here"
+        return f"Halo's model: already here ({what})"
     if found and Path(found) != Path(hm.base_path(models, m)):
         # the installer's copy, NEBULA_HALO_BASE, or the owner's link to one elsewhere: theirs, never replaced
         return f"Halo's model: {found} is not the version this Nebula pins; left as it is"
@@ -167,7 +171,7 @@ def halo_model(cfg) -> str:
                 raise RuntimeError(next((f["error"] for f in st["files"] if f.get("error")), st["state"]))
             break
         time.sleep(1)
-    return "Halo's model: in place (LFM2.5-1.2B, checked against its sha256)"
+    return f"Halo's model: in place ({what}, checked against its sha256)"
 
 
 # --- Lookup

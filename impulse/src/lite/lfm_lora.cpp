@@ -30,7 +30,7 @@ static bool finite_tensor(const ggml_tensor * t) {
 
 std::string LfmLora::load(const std::string & path, float scale, ggml_context * base, ggml_backend_t backend, const std::string & arch) {
     if (!std::isfinite(scale)) return "LoRA scale must be finite";
-    const bool dense = arch == "lfm2";
+    const bool dense = arch == "lfm2" || arch == "lfm3";
     if (!dense && !adapters_.empty()) return "lfm2moe: one adapter at a time";
     adapters_.push_back(Adapter{});
     Adapter & A = adapters_.back();
@@ -64,7 +64,7 @@ std::string LfmLora::load(const std::string & path, float scale, ggml_context * 
     size_t mine = 0;
     static const char * dense_leaves[] = { "attn_q.weight", "attn_k.weight", "attn_v.weight", "attn_output.weight",
                                            "shortconv.in_proj.weight", "shortconv.out_proj.weight",
-                                           "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight" };
+                                           "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight", "attn_gate.weight" };
     for (int64_t i = 0; i < nt; ++i) {
         std::string name = gguf_get_tensor_name(A.file, i);
         if (name.size() < 7 || (name.substr(name.size()-7) != ".lora_a" && name.substr(name.size()-7) != ".lora_b"))

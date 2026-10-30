@@ -150,6 +150,17 @@ int run(int argc, char ** argv) {
         else if (a == "--top-p") { P.sampling.top_p = std::stof(nx()); topp_set = true; }
         else if (a == "--min-p") { P.sampling.min_p = std::stof(nx()); minp_set = true; }
         else if (a == "--repeat-penalty") { P.sampling.penalty_repeat = std::stof(nx()); repeat_set = true; }
+        else if (a == "-rea" || a == "--reasoning") {   // llama-server's (common/arg.cpp): on / off / auto, the template's enable_thinking
+            const std::string v = nx();
+            if (v == "on" || v == "1" || v == "true") { P.enable_reasoning = 1; P.default_template_kwargs["enable_thinking"] = "true"; }
+            else if (v == "off" || v == "0" || v == "false") { P.enable_reasoning = 0; P.default_template_kwargs["enable_thinking"] = "false"; }
+            else if (v == "auto") P.enable_reasoning = -1;
+            else { fprintf(stderr, "error: --reasoning on|off|auto\n"); return 1; }
+        }
+        else if (a == "--chat-template-kwargs") {   // llama-server's: a JSON object, each value kept as JSON for the template
+            try { for (const auto & it : json::parse(nx()).items()) P.default_template_kwargs[it.key()] = it.value().dump(); }
+            catch (const std::exception & e) { fprintf(stderr, "error: --chat-template-kwargs: %s\n", e.what()); return 1; }
+        }
         else if (a == "--image-max-tokens") A.image_max_tokens = std::stoi(nx());
         else if (a == "--mmproj-place") A.mmproj_place = nx();
         else if (a == "--mmproj-idle") A.mmproj_idle = std::stoi(nx());
@@ -215,7 +226,8 @@ int run(int argc, char ** argv) {
     if (!model) { fprintf(stderr, "cannot load the vocabulary\n"); return 1; }
     char architecture[64] = {};
     llama_model_meta_val_str(model, "general.architecture", architecture, sizeof(architecture));
-    const bool lfm2 = std::string(architecture) == "lfm2moe" || std::string(architecture) == "lfm2";
+    const bool lfm3 = std::string(architecture) == "lfm3";   // LFM3: the LFM2 engine path with its own attention
+    const bool lfm2 = std::string(architecture) == "lfm2moe" || std::string(architecture) == "lfm2" || lfm3;
     if (lfm2) {
         if (!A.mtp.empty() || !A.mmproj.empty()) { fprintf(stderr, "LFM2 is text-only and has no supported MTP head\n"); llama_model_free(model); return 2; }
         if (!ctx_set) {
@@ -230,7 +242,7 @@ int run(int argc, char ** argv) {
         if (!v_set) A.eo.type_v = GGML_TYPE_F16;
         if (!temp_set) P.sampling.temp = 0.1f;
         if (!topk_set) P.sampling.top_k = 50;
-        if (!repeat_set) P.sampling.penalty_repeat = 1.05f;
+        if (!repeat_set) P.sampling.penalty_repeat = lfm3 ? 1.1f : 1.05f;   // the model cards: LFM3 1.1, LFM2.5 1.05
     }
     const bool flint = std::string(architecture) == "flint";
     if (flint) {   // text only, no MTP head; the model card's sampling (temperature 1, top-p 0.95, top-k 20, min-p 0)
@@ -1137,6 +1149,18 @@ int run(int argc, char ** argv) {
             }
         } else for (auto t : toks) out.push_back(t);
         send_json(r, json{ { "tokens", out } }, 200);
+    });
+    // llama-server's /apply-template: the prompt a chat request becomes (the same late-system rule and parser as /v1/chat/completions)
+    srv.Post("/apply-template", [&](const httplib::Request & q, httplib::Response & r) {
+        json body; try { body = json::parse(q.body); } catch (...) { send_json(r, json{ { "error", "invalid JSON" } }, 400); return; }
+        if (body.contains("messages") && body.at("messages").is_array())
+            for (size_t i = 1; i < body.at("messages").size(); ++i) {
+                json & m = body.at("messages")[i];
+                if (m.is_object() && m.value("role", "") == "system") m["role"] = "user";
+            }
+        std::vector<raw_buffer> files;
+        try { json data = oaicompat_chat_params_parse(body, chat, files); send_json(r, json{ { "prompt", data.at("prompt") } }, 200); }
+        catch (const std::exception & e) { send_json(r, format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST), 400); }
     });
     srv.Post("/detokenize", [&](const httplib::Request & q, httplib::Response & r) {
         json body; try { body = json::parse(q.body); } catch (...) { send_json(r, json{ { "error", "invalid JSON" } }, 400); return; }

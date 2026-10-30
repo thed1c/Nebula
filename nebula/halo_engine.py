@@ -17,6 +17,10 @@ Where things are found (first wins):
                 installers: Nebula downloads it (nebula/pieces.py, sha256 checked) on a machine
                 without an NVIDIA card, and says so; last, a llama-server of the owner's own on the PATH
   the base      NEBULA_HALO_BASE, the installer's halo/ folder, the models folder (hf.Pulls' layout, as fetched)
+  the model     the runtime's (halo_model.model_for, the owner's 2026-10-30 pick "Switch on NVIDIA now"): Impulse (an NVIDIA
+                card) runs Halo v3.1 on LFM3-1.7B; Impulse portable and llama-server run Halo v2 on LFM2.5-1.2B. An NVIDIA
+                machine with only v2's file (Nebula before 0.1.5) keeps Halo v2 running while LFM3's file downloads and moves
+                to it when it is in place; when the download fails, or Impulse cannot run LFM3, Halo v2 stays
 
 The base model is not inside the installer: the installer fetches it while it unpacks the rest (design decision 10-21: "We will
 just download while other items are installing"). When it is still missing at start (no network then), Nebula fetches it
@@ -170,6 +174,10 @@ def find_base(models_dir: str, m: dict | None = None) -> str | None:
     return None
 
 
+def _gb(m: dict) -> str:
+    return f"{int(m['base']['bytes']) / 1e9:.1f} GB"
+
+
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -191,6 +199,8 @@ class HaloEngine:
         self.why: str | None = None
         self.state = "off"
         self.progress: dict | None = None
+        self.m: dict | None = None        # the model entry it runs (halo_model.manifest), once chosen
+        self.upgrade: dict | None = None  # LFM3 downloading while Halo v2 runs: {"model", "progress", "why"}
         self._wake = threading.Event()
 
     def settings(self) -> dict:
@@ -211,7 +221,7 @@ class HaloEngine:
         if self.settings()["where"] == "cpu":
             return "cpu"                                  # the owner's choice
         # a spare Radeon (or other non-NVIDIA card) first: Halo there through Impulse portable's Vulkan backend
-        need = int(halo_model.manifest()["server"]["gpu_mb"]) + 512
+        need = int((self.m or halo_model.manifest())["server"]["gpu_mb"]) + 512
         ls = next((cmd for rt, cmd in find_servers(self.cfg.base_dir) if rt != "Impulse"), None)
         vk = [d for d in vulkan_gpus(ls) if d["free_mb"] >= need]
         if vk:
@@ -237,7 +247,7 @@ class HaloEngine:
                   "engines": [s.get("name") for s in specs
                               if {c.get("uuid"), str(c.get("index"))} & {x.strip() for x in str(s.get("card") or "").split(",")}]}
                  for c in have]
-        where = halo_model.place(cards)
+        where = halo_model.place(cards, m=self.m)
         hit = next((c for c in have if where == f"gpu:{c['index']}"), None)
         self.card = (hit or {}).get("uuid") or (where.split(":", 1)[1] if where.startswith("gpu") else "")
         return where
@@ -256,8 +266,10 @@ class HaloEngine:
         if not st["own_model"]:
             self.state, self.why = "off", "turned off: Halo thinks with the Assistant's model"
             return self
-        bad = halo_model.verify_assets()
-        server, base = find_servers(self.cfg.base_dir), find_base(self.models_dir())
+        server = find_servers(self.cfg.base_dir)
+        self.m = halo_model.manifest(model=halo_model.model_for(server[0][0] if server else None))
+        bad = halo_model.verify_assets(self.m)
+        base = find_base(self.models_dir(), self.m)
         if not bad and not has_nvidia() and not any(rt != "Impulse" for rt, _ in server):
             from nebula import pieces                     # no NVIDIA card: Impulse portable, downloaded now, said plainly
             if pieces.pin("impulse-portable") is not None:
@@ -273,14 +285,65 @@ class HaloEngine:
             if os.environ.get("NEBULA_HALO_BASE"):
                 self.state, self.why = "unavailable", "NEBULA_HALO_BASE names no file"
                 return self
-            self.state, self.why = "downloading", "fetching its model (0.7 GB)"
-            threading.Thread(target=self._fetch_then_run, args=(server, st["variant"]), name="halo-fetch", daemon=True).start()
-            return self
+            fb = self._fallback(server)
+            if fb is not None:                            # Halo v2's file is here (an update from 0.1.4): v2 runs now,
+                want, (self.m, base) = self.m, fb         # LFM3's file comes in the background and Halo moves to it
+                self.upgrade = {"model": want["id"], "progress": None,
+                                "why": f"Halo moves to {want['name']} when its model is in place: fetching {_gb(want)} for this NVIDIA card; Halo v2 runs meanwhile"}
+                threading.Thread(target=self._fetch_upgrade, args=(want,), name="halo-upgrade", daemon=True).start()
+            else:
+                self.state, self.why = "downloading", f"fetching its model ({_gb(self.m)}: {self.m['name']})"
+                threading.Thread(target=self._fetch_then_run, args=(server, st["variant"]), name="halo-fetch", daemon=True).start()
+                return self
         self.state = "starting"
         threading.Thread(target=self._run, args=(server, base, st["variant"]), name="halo-engine", daemon=True).start()
         return self
 
     RETRY_S = 120.0
+
+    def _fallback(self, server: list[tuple[str, list[str]]]) -> tuple[dict, str] | None:
+        """Another model these runtimes run whose file is already here (Halo v2 on an NVIDIA machine): (its entry, its file)."""
+        rts = {rt for rt, _ in server}
+        for m in halo_model.models():
+            if m["id"] != (self.m or {}).get("id") and rts & set(m.get("runtimes") or []) and not halo_model.verify_assets(m):
+                b = find_base(self.models_dir(), m)
+                if b:
+                    return m, b
+        return None
+
+    def _fetch_upgrade(self, m: dict) -> None:
+        """The chosen model's file (pinned revision, sha256) while the fallback runs; then Halo restarts on it. While offline,
+        or when the file does not check out, the fallback stays and the fetch is tried again later."""
+        import time
+        from nebula.hf import Pulls
+        pulls = Pulls(self.models_dir())
+        wake = self._wake
+        while self.state != "stopped" and self.upgrade is not None:
+            try:
+                pid = halo_model.ensure_base(pulls, m)
+                while pid is not None and self.state != "stopped":
+                    st = pulls.status(pid)
+                    self.upgrade["progress"] = {"bytes": st.get("bytes"), "total": st.get("total")}
+                    if st["state"] in ("done", "failed", "cancelled"):
+                        if st["state"] != "done":
+                            raise RuntimeError(next((f["error"] for f in st["files"] if f.get("error")), st["state"]))
+                        break
+                    time.sleep(1)
+                if self.state == "stopped":
+                    return
+                if not find_base(self.models_dir(), m):
+                    raise RuntimeError("the file did not check out")
+                LOG.info("Halo's model: %s is in place; Halo moves to it", m["name"])
+                self.upgrade = None
+                self.restart()
+                return
+            except Exception as e:  # noqa: BLE001 - offline, or the Hub away: Halo v2 keeps running, tried again later
+                self.upgrade["why"] = (f"{m['name']} could not be fetched yet ({str(e)[:160]}); Halo v2 runs; trying again in "
+                                       f"{int(self.RETRY_S)} s")
+                LOG.info("Halo's model: %s", self.upgrade["why"])
+                wake.wait(self.RETRY_S)
+                if wake is not self._wake or self.state == "stopped":
+                    return
 
     def _fetch_runtime_then_start(self) -> None:
         """Impulse portable (pinned, sha256), then Halo's start as usual; while offline, tried again later."""
@@ -307,7 +370,7 @@ class HaloEngine:
         pulls = Pulls(self.models_dir())
         while self.state == "downloading":
             try:
-                pid = halo_model.ensure_base(pulls)
+                pid = halo_model.ensure_base(pulls, self.m)
                 while pid is not None and self.state == "downloading":
                     st = pulls.status(pid)
                     self.progress = {"bytes": st.get("bytes"), "total": st.get("total")}
@@ -316,7 +379,7 @@ class HaloEngine:
                             raise RuntimeError(next((f["error"] for f in st["files"] if f.get("error")), st["state"]))
                         break
                     time.sleep(1)
-                base = find_base(self.models_dir())
+                base = find_base(self.models_dir(), self.m)
                 if base:
                     self.state = "starting"
                     self._run(server, base, variant)
@@ -329,14 +392,24 @@ class HaloEngine:
                 self._wake.clear()
 
     def _run(self, servers: list[tuple[str, list[str]]], base: str, variant: str) -> None:
-        """Halo's server on the first runtime that comes up: Impulse, else Impulse portable, else llama-server."""
+        """Halo's server on the first runtime that comes up and runs its model: Impulse, else Impulse portable, else
+        llama-server; when none runs it (LFM3 on an Impulse from before it), Halo v2 on them when its file is here."""
         why = None
         for runtime, server in servers:
+            if (runtime not in (self.m.get("runtimes") or [runtime]) and halo_model.model_for(runtime) != self.m["id"]
+                    and not os.environ.get("NEBULA_HALO_MODEL")):
+                continue                                  # Impulse portable / llama.cpp do not run LFM3
             why = self._run_one(runtime, server, base, variant)
             if why is None or self.state == "stopped":
                 return
-            LOG.warning("Halo's own model did not start on %s: %s", runtime, why)
-        self.state, self.why = "failed", why
+            LOG.warning("Halo's own model (%s) did not start on %s: %s", self.m["id"], runtime, why)
+        fb = None if os.environ.get("NEBULA_HALO_MODEL") else self._fallback(servers)
+        if fb is not None:
+            LOG.warning("Halo's own model: %s did not start (%s); Halo v2 instead", self.m["id"], why)
+            self.m, fb_base = fb
+            self.upgrade = None
+            return self._run(servers, fb_base, variant)
+        self.state, self.why = "failed", why or f"no runtime here runs {self.m['name']}"
 
     def _run_one(self, runtime: str, server: list[str], base: str, variant: str) -> str | None:
         """None once its server has run (and ended); else why it did not come up."""
@@ -348,7 +421,7 @@ class HaloEngine:
                 return "Impulse's CUDA build runs on NVIDIA cards only: the Radeon is Impulse portable's (Vulkan)"
             port = _free_port()
             args = halo_model.server_args(self.models_dir(), variant, "gpu" if self.where.startswith("vk:") else self.where,
-                                          "worker", port, base=base)
+                                          "worker", port, m=self.m, base=base)
             if self.where.startswith("vk:"):
                 args += ["--device", self.vk_device]     # the Radeon, through Vulkan; CUDA hidden from it
             env = {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": self.card if self.where.startswith("gpu") else ""}
@@ -370,7 +443,7 @@ class HaloEngine:
                 why = self.proc.error or "its server did not come up"
                 self.proc.stop()
                 return why
-            m = halo_model.manifest()
+            m = self.m
             self.tier = Tier(name="halo-own", engine=url, model=m["id"], context=m["server"]["context"], slots=m["server"]["slots"])
             self.state, self.runtime = "ready", runtime
             self.why = ((("no NVIDIA GPU on this machine: on the CPU" if getattr(self, "no_cards", False) else
@@ -399,12 +472,13 @@ class HaloEngine:
             except Exception:  # noqa: BLE001
                 pass
         self.proc, self.tier, self.where, self.why, self.state, self.runtime = None, None, None, None, "off", None
+        self.upgrade = None
         self._wake = threading.Event()
         return self.start()
 
     def set_variant(self, variant: str) -> None:
         if self.ready():
-            halo_model.set_variant(self.tier.engine, variant, api_key=getattr(self, "api_key", None))
+            halo_model.set_variant(self.tier.engine, variant, m=self.m, api_key=getattr(self, "api_key", None))
 
     def close(self) -> None:
         self.state = "stopped"
@@ -419,6 +493,7 @@ class HaloEngine:
         st = self.settings()
         return {"state": self.state, "where": self.where, "runtime": self.runtime, "why": self.why,
                 **({"gpu_name": self.gpu_name} if getattr(self, "gpu_name", None) else {}), **({"progress": self.progress} if self.progress else {}),
+                **({"model": self.m["id"], "model_name": self.m["name"]} if self.m else {}), **({"upgrade": self.upgrade} if self.upgrade else {}),
                 "own_model": st["own_model"], "variant": st["variant"], "runs_on": st["where"]}      # runs_on: the owner's choice
 
     def wrong_place(self) -> bool:

@@ -111,6 +111,11 @@ struct Stats {
 
 struct HParams {
     bool lfm2 = false;
+    // lfm3 (LiquidAI LFM3, llama.cpp src/models/lfm3.cpp, b11988): LFM2's short convolutions (kernel 7) and dense SwiGLU FFNs,
+    // attention layers sliding (n_swa cells, rope_base_swa, whole-head RoPE) or global (rope_base, partial RoPE through the
+    // rope_freqs factors), QK RMSNorm, a sigmoid gate per head from the block input, sandwich norms. lfm2 is true too
+    bool lfm3 = false;
+    float rope_base_swa = 0;
     // flint (Recursive's Flint, llama.cpp src/models/flint.cpp, ggml-org/llama.cpp#30928): every layer attention, sliding
     // (n_swa cells, the current one included) or full; RoPE only where has_rope (the full layers have no positions); learned
     // sinks; QK RMSNorm; leading dense SwiGLU layers; sigmoid routing renormalized; one ungated shared expert
@@ -226,6 +231,7 @@ private:
         ggml_tensor *conv_in, *conv_out, *conv_kernel; // LFM2 short convolution
         ggml_tensor *dense_gate, *dense_up, *dense_down, *expert_bias;
         ggml_tensor *attn_sinks;                                                                    // flint: [n_head]
+        ggml_tensor *head_gate, *mix_post_norm, *ffn_post_norm;                                     // lfm3: [n_embd, n_head]; sandwich norms
         ggml_tensor *gate_inp, *gate_exps, *up_exps, *down_exps;                                    // routed experts
         ggml_tensor *gate_inp_shexp, *gate_shexp, *up_shexp, *down_shexp;                          // shared expert
         ggml_tensor *hc_an, *hc_ad, *hc_au, *hc_ai, *hc_fn, *hc_fd, *hc_fu, *hc_fi;                // qwen4exp: the two hc mixers
@@ -294,11 +300,30 @@ private:
     ggml_backend_sched_t sched_ = nullptr;
     ggml_tensor *tok_embd_ = nullptr, *output_ = nullptr, *output_norm_ = nullptr;
     ggml_tensor *output_s_ = nullptr;        // output.scale (llama.cpp loads it for an NVFP4 output only)
+    ggml_tensor *rope_freqs_ = nullptr;      // lfm3: the global layers' RoPE frequency factors [n_rot / 2] (partial rotation)
     // the per-expert scales read once at load (gate, up, down; empty = none): the CPU pool's jobs take them
     std::vector<std::array<std::vector<float>, 3>> exps_sh_;
     ggml_tensor *hc_head_norm_ = nullptr, *hc_head_down_ = nullptr, *hc_head_up_ = nullptr, *ple_tbl_ = nullptr;   // qwen4exp
     std::vector<Layer> L_;
     Cache kv_;
+    // lfm3: the sliding layers' own cache (llama_kv_cache_iswa's SWA half): per stream n_swa + the largest ubatch + kSwaSlack
+    // cells, K/V of the sliding layers only (the main cache then holds the global ones). Position p lives in cell p mod ssize,
+    // so a cell is reused only once no later token can see its position, and a rewind of up to ~kSwaSlack tokens keeps its
+    // window; swa_floor_v_[seq]: every cell of seq before it is gone. Checkpoints and parked states keep the window.
+    // Off with IMPULSE_SWA_FULL=1 (one cache, the window in the mask: llama.cpp --swa-full, the bit-for-bit gates)
+    static constexpr uint32_t kSwaSlack = 512;
+    Cache kvs_;
+    bool swa_ring_ = false;
+    std::vector<int32_t> swa_floor_v_;
+    ggml_context * ctx_kvs_ = nullptr;
+    ggml_backend_buffer_t buf_kvs_ = nullptr;
+    bool kv_layer(int il) const { return !hp_.is_recr[il] && !(swa_ring_ && hp_.is_swa[il]); }   // an attention layer of kv_
+    bool swa_layer(int il) const { return swa_ring_ && !hp_.is_recr[il] && hp_.is_swa[il]; }       // a sliding layer of kvs_
+    bool swa_resumable(int seq, int pos) const { return !swa_ring_ || swa_floor_v_[seq] == 0 || pos - hp_.n_swa + 1 >= swa_floor_v_[seq]; }
+    struct SwaSnap { std::vector<int32_t> pos; std::vector<uint8_t> rows; int32_t floor = 0; };   // a stream of kvs_, one sequence's cells
+    SwaSnap swa_save(int seq, int32_t below) const;
+    void swa_load(int seq, const SwaSnap & s);
+    std::vector<SwaSnap> ckpt_swa_;   // [seq * kCkpts + c], beside ckpt_
     std::vector<ggml_tensor *> r_l_, s_l_;   // recurrent states per delta-net layer: conv [n_embd_r, 1], ssm [n_embd_s, 1]
     std::vector<ggml_tensor *> p_l_;         // qwen4exp: the PLE layer's conv history [n_embd_p, rows as r_l_]
     std::vector<ggml_tensor *> idxk_;        // qwen4exp: the indexer's raw keys per QSA layer [idx_dim, kv cells], the K/V's cells
@@ -365,14 +390,15 @@ private:
     // The shape: tokens, padded KV cells, output rows, the embedding branch, a fresh recurrent state. Anything that moves a
     // tensor the graph points at (a new scheduler, the slot arena, the KV pager, a reserve) drops it (graph_invalidate).
     struct GraphKey {
-        int n = -1, n_kv = 0, n_outputs = 0; bool embd = false; int rs_zero = -1, ns = 1, head = 0, l0 = 0, l1 = 0; bool wide = false; int swa_lo = 0;
+        int n = -1, n_kv = 0, n_outputs = 0; bool embd = false; int rs_zero = -1, ns = 1, head = 0, l0 = 0, l1 = 0; bool wide = false; int swa_lo = 0, n_kv_s = 0;
         bool operator==(const GraphKey & o) const { return n == o.n && n_kv == o.n_kv && n_outputs == o.n_outputs && embd == o.embd &&
                                                            rs_zero == o.rs_zero && ns == o.ns && head == o.head && l0 == o.l0 && l1 == o.l1 &&
-                                                           wide == o.wide && swa_lo == o.swa_lo; }
+                                                           wide == o.wide && swa_lo == o.swa_lo && n_kv_s == o.n_kv_s; }
     };
     struct Graph {
         ggml_context * ctx = nullptr; ggml_cgraph * gf = nullptr; bool valid = false; GraphKey key;
         ggml_tensor *inp_tokens = nullptr, *inp_embd = nullptr, *inp_pos = nullptr, *k_idxs = nullptr, *v_idxs = nullptr, *kq_mask = nullptr, *kq_mask_swa = nullptr,
+                    *k_idxs_s = nullptr, *v_idxs_s = nullptr,   // lfm3: the sliding cache's cells
                     *s_copy = nullptr, *k_rot = nullptr, *v_rot = nullptr, *inp_out_ids = nullptr, *inp_h = nullptr, *t_logits = nullptr, *t_h = nullptr;
         // qwen4exp: the PLE rows, the indexer's cells (k_idxs as the attention's), and the QSA block layout (llama.cpp's
         // llm_graph_input_qsa: one set for every layer of a ratio)

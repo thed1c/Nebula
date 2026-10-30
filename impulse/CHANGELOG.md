@@ -5,6 +5,25 @@ Impulse was called Strata-Lite until 2026-10-17. Its versions restart with the f
 The sections from 0.2.3 down are Strata-Lite's own numbers.
 
 ## Unreleased
+- **Server: `--reasoning on|off|auto` and `--chat-template-kwargs JSON`** (llama-server's, as b6b003d's common/arg.cpp sets
+  them): the template's `enable_thinking` for every request that does not set its own. Halo runs LFM3 with `--reasoning off`.
+- **LiquidAI LFM3 1.7B (`lfm3`), a candidate for Halo:** the dense LFM2 path (`H.lfm2`, `H.lfm3`) with LFM3's own blocks, from
+  llama.cpp b11988's `src/models/lfm3.cpp` and Liquid's modeling code: 13 gated short convolutions (kernel 7), 5 sliding-window
+  attention layers (256 cells, RoPE theta 1e4 over the whole head) and 6 global ones (theta 1e6, `rope_freqs` leaving the second
+  half of each head unrotated), Q/K RMSNorm, a sigmoid gate per head from the block input, sandwich norms (post-mixer and
+  post-FFN RMSNorm), SwiGLU FFN, `output_norm`. The sliding layers keep their own cache (llama.cpp's iswa split): per slot
+  256 + the ubatch + 512 cells, position p in cell p mod size (the layout follows from the positions, so a resumed sequence
+  reads the same cells as one read from the start), checkpoints and parked states keep the window; 1,612 MiB at 32K x 4 slots
+  (2,076 with the whole context for them, llama.cpp b11988 1,616); `IMPULSE_SWA_FULL=1` keeps Flint's one-cache shape (the
+  bit-for-bit gates). The big reserve graph takes one output row per slot (a prompt piece outputs its last row), not 512. LoRA adapters (`lfm3` adapters, every linear incl. `attn_gate`),
+  parallel slots, `--device cpu`. `patches/llama.cpp-b6b003d-lfm3.patch` (applied after Flint's): the arch name for the
+  vocabulary and chat template (Impulse runs the graph) and ggml-cuda's width-7 `ssm_conv`. LFM3's template takes llama.cpp's
+  Qwen3-Coder XML tool-call parser. Checked against an independent float32 reference of Liquid's modeling code: on its
+  dequantized Q4_0 weights KL 0.0004 (422-token prompt past the window, 32 steps, every top token the same; CPU 0.0002), on the
+  BF16 weights KL 0.013; slots bit-identical alone and beside another (q35-seqs); a synthetic rank-8 adapter KL 0.0003 against
+  the reference with it merged, scale 0 bit-identical to none. Not in Impulse portable (llama.cpp's own graph) yet.
+- **`/apply-template`** (llama-server's): the prompt a chat request becomes, through the same late-system rule and parser as
+  `/v1/chat/completions`.
 - **Streaming as the tokens come (both servers, every model).** `stream: true` used to wait for the whole answer and send
   every SSE event at once; a model that thinks first (Flint) showed nothing for minutes. Now each request's tokens go out as
   llama-server's own partial results (`src/lite/stream_out.hpp`): one chat-parser state per request, so `reasoning_content`,

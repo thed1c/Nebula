@@ -1,0 +1,77 @@
+diff --git a/ggml/src/ggml-cuda/ssm-conv.cu b/ggml/src/ggml-cuda/ssm-conv.cu
+index 1463169..fc86546 100644
+--- a/ggml/src/ggml-cuda/ssm-conv.cu
++++ b/ggml/src/ggml-cuda/ssm-conv.cu
+@@ -151,9 +151,10 @@ static void ssm_conv_f32_cuda(const float * src0, const float * src1, const floa
+         case 3:  launch_kernel(std::integral_constant<int, 3 >{}); break;
+         case 4:  launch_kernel(std::integral_constant<int, 4 >{}); break;
+         case 5:  launch_kernel(std::integral_constant<int, 5 >{}); break;
++        case 7:  launch_kernel(std::integral_constant<int, 7 >{}); break;   // LFM3's short convolutions
+         case 9:  launch_kernel(std::integral_constant<int, 9 >{}); break;
+         case 15: launch_kernel(std::integral_constant<int, 15>{}); break;
+-        default: GGML_ABORT("Only support kernel sizes 3, 4, 5, 9, 15 right now.");
++        default: GGML_ABORT("Only support kernel sizes 3, 4, 5, 7, 9, 15 right now.");
+     }
+ }
+ 
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index 0a2d64f..6991cd2 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -127,6 +127,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
+     { LLM_ARCH_OPENAI_MOE,       "gpt-oss"          },
+     { LLM_ARCH_LFM2,             "lfm2"             },
+     { LLM_ARCH_LFM2MOE,          "lfm2moe"          },
++    { LLM_ARCH_LFM3,             "lfm3"             },
+     { LLM_ARCH_DREAM,            "dream"            },
+     { LLM_ARCH_SMALLTHINKER,     "smallthinker"     },
+     { LLM_ARCH_LLADA,            "llada"            },
+@@ -1073,6 +1074,7 @@ bool llm_arch_is_hybrid(const llm_arch & arch) {
+         case LLM_ARCH_GRANITE_HYBRID:
+         case LLM_ARCH_LFM2:
+         case LLM_ARCH_LFM2MOE:
++        case LLM_ARCH_LFM3:
+         case LLM_ARCH_NEMOTRON_H:
+         case LLM_ARCH_NEMOTRON_H_MOE:
+         case LLM_ARCH_QWEN3NEXT:
+@@ -1113,6 +1115,7 @@ bool llm_arch_supports_rs_rollback(const llm_arch & arch) {
+         case LLM_ARCH_NEMOTRON_H_MOE:
+         case LLM_ARCH_LFM2:
+         case LLM_ARCH_LFM2MOE:
++        case LLM_ARCH_LFM3:
+         case LLM_ARCH_BAILINGMOE3:
+             return true;
+         default:
+diff --git a/src/llama-arch.h b/src/llama-arch.h
+index 78a10f6..4764c56 100644
+--- a/src/llama-arch.h
++++ b/src/llama-arch.h
+@@ -132,6 +132,7 @@ enum llm_arch {
+     LLM_ARCH_OPENAI_MOE,
+     LLM_ARCH_LFM2,
+     LLM_ARCH_LFM2MOE,
++    LLM_ARCH_LFM3,
+     LLM_ARCH_DREAM,
+     LLM_ARCH_SMALLTHINKER,
+     LLM_ARCH_LLADA,
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index c83fecd..ec10d0e 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -302,6 +302,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
+             return new llama_model_lfm2(params);
+         case LLM_ARCH_LFM2MOE:
+             return new llama_model_lfm2moe(params);
++        case LLM_ARCH_LFM3:   // Impulse: vocabulary only (the engine runs the graph)
++            return new llama_model_lfm2(params);
+         case LLM_ARCH_SMALLTHINKER:
+             return new llama_model_smallthinker(params);
+         case LLM_ARCH_GROVEMOE:
+@@ -3005,6 +3007,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
+         case LLM_ARCH_HY_V3:
+         case LLM_ARCH_LFM2:
+         case LLM_ARCH_LFM2MOE:
++        case LLM_ARCH_LFM3:
+         case LLM_ARCH_SMALLTHINKER:
+         case LLM_ARCH_SEED_OSS:
+         case LLM_ARCH_GROVEMOE:
