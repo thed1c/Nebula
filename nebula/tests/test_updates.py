@@ -486,3 +486,11 @@ class SignFeedAppTest(unittest.TestCase):
         self.assertEqual((app["bases"], app["bytes"], app["sha256"]), (["0.1.4", "0.1.4"], 3, hashlib.sha256(b"app").hexdigest()))
         with self.assertRaises(SystemExit):
             sign_feed.build("0.1.4.1", "", [], None, ["linux-x86_64=%s=https://x.invalid/a.tar.gz=0.1.4" % (tmp / "a.tar.gz")])
+
+
+class WindowsHelperFlagsTest(unittest.TestCase):
+    def test_the_helper_is_not_started_detached(self):
+        # a DETACHED_PROCESS cmd.exe died waiting for Nebula to close: the update never ran and Nebula did not reopen
+        from nebula import updates
+        self.assertFalse(updates.HELPER_FLAGS & 0x00000008)
+        self.assertTrue(updates.HELPER_FLAGS & 0x08000000)           # still no console window

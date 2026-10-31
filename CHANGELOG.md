@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+**Windows: the Update button works.** On Windows, Nebula's Update closed Nebula, but its helper stopped before putting
+the new version in place, so Nebula did not come back. The helper now runs to the end and reopens Nebula.
+
 ## 0.1.6
 
 **Windows: Nebula's window opens again.** On Windows, 0.1.5 closed at once, before its window appeared: the window's

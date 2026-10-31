@@ -470,6 +470,12 @@ start "" "%~3\\python\\pythonw.exe" -m nebula.app --config "%~5"
 """
 
 
+# Windows: how the helper is started. CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW, and not DETACHED_PROCESS: a detached
+# cmd.exe died in its wait for Nebula to close (tested on a Windows 11 machine, 2026-10-31), so Nebula closed for the
+# update and nothing put it in place or reopened it. Started this way, the helper outlives Nebula and does both.
+HELPER_FLAGS = 0x00000200 | 0x08000000
+
+
 def run_installer(path: Path, cfg, home: Path | None) -> None:
     """Starts the helper that runs the installer and reopens Nebula; it outlives this process. No sudo, ever."""
     if home is None:
@@ -478,7 +484,7 @@ def run_installer(path: Path, cfg, home: Path | None) -> None:
     if os.name == "nt":
         helper = work / "nebula-update.cmd"
         helper.write_text(WINDOWS_HELPER)
-        flags = 0x00000008 | 0x00000200 | 0x08000000     # DETACHED_PROCESS, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW
+        flags = HELPER_FLAGS
         subprocess.Popen(["cmd", "/c", str(helper), str(path), str(os.getpid()), str(home),
                           cfg.base_dir or str(work), cfg.path or ""], creationflags=flags, close_fds=True)
         return
@@ -547,7 +553,7 @@ def run_app_update(path: Path, cfg, home: Path | None) -> None:
     if os.name == "nt":
         helper = work / "nebula-app-update.cmd"
         helper.write_text(WINDOWS_APP_HELPER)
-        flags = 0x00000008 | 0x00000200 | 0x08000000
+        flags = HELPER_FLAGS
         subprocess.Popen(["cmd", "/c", str(helper), str(path), str(os.getpid()), str(home), cfg.base_dir or str(work), cfg.path or ""],
                          creationflags=flags, close_fds=True)
         return
