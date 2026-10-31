@@ -43,6 +43,7 @@ class Rules:
     escalation_ignore_outages: bool = True    # a tool error that is an outage (a 50x, a refused connection) is no strike
     stage_router: dict = field(default_factory=dict)   # nebula/stage.py: {mode, picker, threshold, judge}
     route_rules: list = field(default_factory=list)    # nebula/route_rules.py: if … (is / is not) … then …, in order
+    routes: dict = field(default_factory=dict)         # nebula/route_settings.py: {route: {"instructions": …}}
 
     @staticmethod
     def from_dict(d: dict | None) -> "Rules":
@@ -56,6 +57,8 @@ class Rules:
                 r.stage_router = dict(v)
             elif k == "route_rules" and isinstance(v, list):
                 r.route_rules = list(v)
+            elif k == "routes" and isinstance(v, dict):
+                r.routes = {str(a): dict(b) for a, b in v.items() if isinstance(b, dict)}
             elif k in ("clamp_output", "escalation_ignore_outages"):
                 r.__dict__[k] = bool(v)
             elif hasattr(r, k):

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+**Instructions for each route.** The Routes tab has a box for each route (Everyday, Larger, Writing, Critique). A
+request sent to a route gets that route's instructions at the top of its system prompt, before an agent's and the
+app's own, which are kept. The route is the one a rule or smart routing sent it to, else the answering model's own.
+Callers in passthrough mode get none. Each reply's "why?" says which route's instructions it carried.
+
 ## 0.1.5
 
 **Halo upgraded to LFM3.** With an NVIDIA card, Halo, Nebula's helper model, now runs Liquid AI's LFM3-1.7B with new

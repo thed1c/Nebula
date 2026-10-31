@@ -29,6 +29,7 @@ from nebula import names, stars
 from nebula.engine import CALL_INPUT
 from nebula.admission import RANK, QueueTimeout, priority_of
 from nebula.agents import apply_agent, select_agent, system_text
+from nebula import route_settings
 from nebula.parking import ParkedTooBig
 from nebula.sizing import estimate_tokens, holds, needed
 from nebula.engine import EngineError
@@ -106,6 +107,7 @@ class Turn:
                                                     getattr(ctx, "peer", None))
         self.slots = getattr(ctx, "slots", None)            # the slot each tenant has on a shared engine
         self.isolation = None
+        self.route = None                                   # the route it is on (nebula/route_settings.py)
         self.pinned = False                                 # the request named its model: never moved in silence
         self.peer = getattr(ctx, "peer", None)              # the paired Nebula asking, when one is
         self.blocked, self.not_offered = {}, set()
@@ -196,6 +198,8 @@ class Turn:
             state.current_tier = agent.tier     # the agent's own floor, before it has answered in this session
         # the size, and which ticked models hold it; none = the parking lot (step C)
         sizing = list(messages) + ([{"role": "system", "content": system_text(agent, self.cfg.base_dir)}] if agent else [])
+        if route_settings.longest(self.rules):          # its route is not known yet: the longest route instructions count
+            sizing.append({"role": "system", "content": route_settings.longest(self.rules)})
         est, how = estimate_tokens(self._engine(self.ladder[0]) if self.ladder else None, sizing, tools, self.rules.estimate_margin)
         self.max_tokens = self.req.get("max_tokens") or self.req.get("max_output_tokens")
         if self.rules.clamp_output:                     # the answer's budget is cut to the slot later: fit the prompt first
@@ -284,6 +288,12 @@ class Turn:
                 decision.reasons.append(why)
             decision.inputs["priority"] = self.priority
             decision.inputs["expected_wait_s"] = round(self.admission.expected_wait(decision.tier, rank), 2)
+        # the route it is on, and that route's own instructions (nebula/route_settings.py)
+        self.route = route_settings.route_of(self, decision.tier.name)
+        route_text = route_settings.instructions(self.rules, self.route)
+        if route_text:
+            decision.reasons.append(f"instructions:{self.route}")
+            decision.inputs["route_instructions"] = {"route": self.route, "chars": len(route_text)}
         floor_tier = self.ladder[decision.floor]
         engine = self._engine(decision.tier)
         packet = None
@@ -357,6 +367,8 @@ class Turn:
         if agent is not None:
             spec = self.tools.openai_tools(agent.tools) if (self.tools is not None and agent.tools) else []
             apply_agent(body, agent, system_text(agent, self.cfg.base_dir), spec)
+        if route_text:                                  # the route's own instructions lead, before the agent's and the app's
+            route_settings.apply(body, route_text)
         apply_thinking(body, decision.thinking)
         if self.policy is not None:
             self.policy.note_call(decision.tier.name)

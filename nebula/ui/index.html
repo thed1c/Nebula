@@ -675,6 +675,10 @@
   #plan-rules .rh input[data-r=name] { flex:1; min-width:160px; font-weight:700; }
   #plan-rules .rc b, #plan-rules .rt b { min-width:44px; color:var(--mut); font-weight:600; }
   #plan-rules input[type=text] { min-width:120px; }
+  #plan-routes .rti { display:grid; grid-template-columns:minmax(110px,160px) 1fr; gap:6px 12px; align-items:start; margin:6px 0; }
+  #plan-routes .rti b { display:block; } #plan-routes .rti small { color:var(--mut); font-size:12px; }
+  #plan-routes textarea { width:100%; min-height:54px; resize:vertical; background:var(--p1); border:1px solid var(--line); border-radius:6px; color:var(--ink); padding:6px 8px; font-size:13px; }
+  @media (max-width: 620px) { #plan-routes .rti { grid-template-columns:1fr; } }
   .widget.fresh { box-shadow:0 0 0 2px var(--gold), 0 14px 44px rgba(0,0,0,.65); }
   /* Halo's ring: glow (calm), pulse (looking), red (acted, or asks you) */
   .haloring { display:inline-block; width:12px; height:12px; border-radius:50%; margin:0 6px; vertical-align:middle; border:2px solid #ffd166; box-shadow:0 0 8px #ffd166; }
@@ -865,6 +869,8 @@
       <table class="ptable"><thead><tr><th>Model</th><th>On</th><th>Tier</th><th>Goes first</th><th>Order</th><th></th></tr></thead><tbody id="plan-models"></tbody></table>
       <h4>Waiting</h4><div class="psettings" id="plan-settings"></div>
       <h4>Smart routing</h4><div class="psettings" id="plan-smart"></div>
+      <h4>Instructions for each route</h4><p class="muted">Optional. A request sent to a route gets its instructions at the top of its system prompt, before the app's own (which is kept). Apply saves them.</p>
+      <div id="plan-routes"></div>
       <h4>Rules</h4><p class="muted">If a request is (or is not) something, then send it somewhere: tried in order, the first that fits decides; a request no rule fits goes to smart routing as above. Apply saves them.</p>
       <div id="plan-rules"></div>
       <div id="plan-watched" hidden><h4 id="plan-watched-title">The watched router's routes</h4><p class="muted">read only: Nebula never changes a router it watches</p>
@@ -1355,7 +1361,7 @@
     const words = { floor: "the session's floor", "model_claim:stuck": "the model said it could not go on", "blocked:pending_tool": "a tool call was waiting, so it stayed", "escalate:1": "escalate was pressed" };
     return String(code || "").split(",").map(c => { if (words[c]) return words[c]; const [k, v] = c.split(":");
       return k === "named" ? `the request named ${v}` : k === "escalate" ? `escalate to ${v} was pressed` : k === "regenerations" ? `asked again ${v} time${v === "1" ? "" : "s"}`
-        : k === "tool_errors" ? `${v} tool errors in a row` : k === "ceiling" ? `held at the agent's ceiling, ${v}` : c; }).join("; ");
+        : k === "tool_errors" ? `${v} tool errors in a row` : k === "instructions" ? `with the ${v} route's instructions` : k === "ceiling" ? `held at the agent's ceiling, ${v}` : c; }).join("; ");
   }
   function toast(e) {
     const who = agentName(e.agent) || INPUT_NAMES[e.dialect] || e.dialect || e.from_tier;
@@ -3450,6 +3456,24 @@
       box.querySelector('[data-t=value]').onchange = (e) => { const k = Object.keys(r.then)[0]; r.then = { [k]: e.target.value }; touch(); };
     }
   }
+  // ---- Routes › Instructions for each route (nebula/route_settings.py): rulesEdit.routes[route].instructions
+  const ROUTE_NAMES = [["everyday", "Everyday", "e.g. Answer briefly and plainly."], ["larger", "Larger", "e.g. Think it through and show your steps."],
+    ["writing", "Writing", "e.g. You write fiction. Write in full scenes, in the voice the user asks for."],
+    ["critique", "Critique", "e.g. Quote the line, say what works and what does not, then how to fix it."]];
+  function renderPlanRoutes() {
+    const el = $("plan-routes"); if (!el) return;
+    const routes = rulesEdit.routes = rulesEdit.routes || {};
+    const on = (r) => (planView?.models || []).map(m => m.name).filter(n => (((polEdit[n] || {}).stage || "everyday").replace("capable", "larger")) === r);
+    el.innerHTML = ROUTE_NAMES.map(([r, label, ph]) => { const ms = on(r);
+      return `<div class="rti"><div><b>${label}</b><small>${ms.length ? esc(ms.join(", ")) : "no model on this route yet"}</small></div>
+        <textarea data-route="${r}" placeholder="${esc(ph)}" maxlength="20000">${esc((routes[r] || {}).instructions || "")}</textarea></div>`; }).join("");
+    for (const ta of el.querySelectorAll("textarea[data-route]")) ta.oninput = () => {
+      const r = ta.dataset.route, v = ta.value;
+      routes[r] = { ...(routes[r] || {}), instructions: v };
+      if (!v.trim()) { delete routes[r].instructions; if (!Object.keys(routes[r]).length) delete routes[r]; }
+      planTouch(true);
+    };
+  }
   // smart routing in words: each request is scored (a long prompt, pictures, code, tool errors, "step by step", asked again)
   // and a hard one goes to a larger model, an easy one to an everyday model
   const SMART = [
@@ -3540,7 +3564,7 @@
       + `<label>at most <input type="number" min="0" data-rule="parking_max_calls" value="${rulesEdit.parking_max_calls ?? 50}" style="width:60px"> parked at once</label>`
       + `<label>a call waits for a slot at most <input type="number" min="5" data-rule="queue_timeout_seconds" value="${rulesEdit.queue_timeout_seconds ?? 600}" style="width:70px"> s</label>`
       + `<label>a conversation stays on its model <input type="number" min="0" data-rule="sticky_seconds" value="${rulesEdit.sticky_seconds || ""}" placeholder="always" style="width:70px"> s after its last answer</label>`;
-    renderPlanModels(); renderPlanSmart(); renderPlanRules();
+    renderPlanModels(); renderPlanSmart(); renderPlanRoutes(); renderPlanRules();
     wirePlan();
   }
   function planTouch(keep) { planDirty = true; if (keep) { $("plan-apply").disabled = false; $("plan-discard").disabled = false; const st = $("plan-state"); st.className = "pstate dirty"; st.textContent = "unsaved changes"; } else renderPlan(); }

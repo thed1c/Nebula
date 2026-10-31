@@ -947,7 +947,7 @@ SWITCHYARD_RULES = {   # the Switchyard-wide settings the Plan tab edits: name -
     "long_context_tokens": ("int", 1024, 2_000_000), "clamp_output": ("bool", None, None), "retries_before_first_byte": ("int", 0, 5),
     "regenerations_to_rise": ("int", 1, 10), "tool_errors_to_rise": ("int", 1, 20), "escalation_hold_seconds": ("number", 0, 86400),
     "escalation_ignore_outages": ("bool", None, None), "output_reserve_tokens": ("int", 64, 1_000_000), "tolerance_seconds": ("tolerance", None, None),
-    "stage_router": ("stage", None, None), "route_rules": ("rules", None, None),
+    "stage_router": ("stage", None, None), "route_rules": ("rules", None, None), "routes": ("routes", None, None),
 }
 
 
@@ -985,6 +985,12 @@ def check_rules(req: dict) -> dict:
             try:
                 v = route_rules.check(v)
             except route_rules.RuleError as e:
+                raise UiError(400, str(e)) from None
+        elif kind == "routes":
+            from nebula import route_settings
+            try:
+                v = route_settings.check(v)
+            except route_settings.RouteError as e:
                 raise UiError(400, str(e)) from None
         elif kind == "stage":
             if not isinstance(v, dict):
