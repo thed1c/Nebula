@@ -12,10 +12,10 @@ Everything runs on your machine, and nothing leaves it unless you say so.
 
 > **Nebula is in testing.** Things may be rough around the edges. If something goes wrong, tell us (see [Getting help](#getting-help)). That's the whole point of testing.
 
-**New in 0.1.5: Halo upgraded to LFM3.** With an NVIDIA card, Halo now runs Liquid AI's **LFM3-1.7B** with new
-adapters: a better router, handoff briefings that don't invent details, and the Uncensored option. Without an NVIDIA
-card (a Radeon, or the CPU), Halo stays on the previous model for now. NVIDIA machines download the new model once
-(about 1 GB), and Nebula says so. The details are in the [changelog](CHANGELOG.md).
+**New in 0.1.6: Windows fixed.** On Windows, 0.1.5 closed before its window appeared; 0.1.6 opens again (install it
+with its Setup). When a model cannot be downloaded, Setup and Nebula now say why in plain words and move on instead
+of retrying for minutes. Each route (Everyday, Larger, Writing, Critique) can have its own instructions. Since 0.1.5,
+Halo runs Liquid AI's **LFM3-1.7B** with an NVIDIA card. The details are in the [changelog](CHANGELOG.md).
 
 ---
 
@@ -93,11 +93,11 @@ That's the whole list. If none of these are on, Nebula works with no internet at
 
 **On Linux:**
 
-1. Download **`nebula-eh-0.1.5-linux-x86_64.run`** (about 243 MB) from the [Releases page](../../releases).
+1. Download **`nebula-eh-0.1.6-linux-x86_64.run`** (about 243 MB) from the [Releases page](../../releases).
 2. Open a terminal in the folder where it downloaded and run:
 
    ```bash
-   sh nebula-eh-0.1.5-linux-x86_64.run
+   sh nebula-eh-0.1.6-linux-x86_64.run
    ```
 
    You don't need `sudo`. Nebula installs just for you, in your home folder. It fetches the rest as it goes (Python,
@@ -107,7 +107,7 @@ That's the whole list. If none of these are on, Nebula works with no internet at
 
 **On Windows:**
 
-1. Download **`Nebula-EH-Setup-0.1.5.exe`** (about 225 MB) from the [Releases page](../../releases).
+1. Download **`Nebula-EH-Setup-0.1.6.exe`** (about 225 MB) from the [Releases page](../../releases).
 2. Double-click it. It installs just for you and fetches the rest as it goes; it takes a few minutes.
 3. Setup asks **"Run your models in a Safe sandbox?"** Say **Yes** (it's the default). Each model then runs in its
    own container inside its own small Linux (Ubuntu 24.04 under WSL2), just like on Linux. If WSL2 isn't on yet,

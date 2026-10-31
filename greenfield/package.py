@@ -50,6 +50,9 @@ PLATFORM_TAGS = {"linux": ["manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "ma
 EXTRAS = {"linux": "gravity,monitor,lookup,docling", "windows": "gravity,monitor,lookup,docling,app"}   # docling: always installed
 TORCH_CPU = "https://download.pytorch.org/whl/cpu"     # docling's PyTorch, the CPU build (PyPI's pulls in GBs of CUDA)   # Linux: the browser window
 PURE_SDISTS = ["proxy_tools"]          # pure Python, published only as source (pywebview's): built into a wheel here first
+# Windows-only dependencies: pip on this (Linux) machine skips them (their markers are read here), so the payload's
+# constraints would leave them unpinned; pinned here at the versions tested on Windows
+WINDOWS_PINS = ["truststore==0.10.5", "pythonnet==3.2.1"]
 
 
 def say(*a):
@@ -171,6 +174,9 @@ def build_payload(plat: str, impulse: Path | None, work: Path, cache: Path,
             head = dict(l.split(": ", 1) for l in meta.read_text(encoding="utf-8", errors="replace").splitlines()[:8] if ": " in l)
             if head.get("Name") and head.get("Version") and head["Name"].lower().replace("_", "-") != "nebula-eh":
                 pins.append(f"{head['Name']}=={head['Version']}")
+        if plat == "windows":
+            named = {x.split("==")[0].lower() for x in pins}
+            pins += [x for x in WINDOWS_PINS if x.split("==")[0].lower() not in named]
         (pay / "constraints.txt").write_text("\n".join(pins) + "\n")
         (pay / "wheels").mkdir()
         shutil.copy2(whl, pay / "wheels" / whl.name)

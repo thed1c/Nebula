@@ -1,11 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.1.6
+
+**Windows: Nebula's window opens again.** On Windows, 0.1.5 closed at once, before its window appeared: the window's
+icon was an SVG, and Windows' window library reads only .ico files. Its window now uses the .ico. If you have 0.1.5 on
+Windows, install 0.1.6 with its Setup (Nebula's own Update button is in the window that did not open).
+
+**Downloads say why they failed, and Setup moves on.** When a model cannot be downloaded, Setup and Nebula now say why
+in a few plain words: no internet, a DNS filter or firewall that blocks Hugging Face, a proxy, an antivirus that
+inspects HTTPS, or a server that is busy. When Hugging Face cannot be reached at all, Setup says so once and goes on in
+seconds instead of retrying for minutes; Nebula fetches Halo's and Lookup's models by itself later. A slow or unsteady
+connection that keeps moving is never given up on. On Windows and macOS, downloads trust the certificates the system
+trusts, as the installer's pip does. When one of Setup's downloads fails, its reason and the full error are kept in
+`prereqs-errors.log` in Nebula's settings folder (replaced on each run, and removed once every step goes through).
 
 **Instructions for each route.** The Routes tab has a box for each route (Everyday, Larger, Writing, Critique). A
 request sent to a route gets that route's instructions at the top of its system prompt, before an agent's and the
 app's own, which are kept. The route is the one a rule or smart routing sent it to, else the answering model's own.
 Callers in passthrough mode get none. Each reply's "why?" says which route's instructions it carried.
+
+The small update: a 0.1.5 install takes 0.1.6 as Nebula's code alone (Impulse and the rest stay as they are).
 
 ## 0.1.5
 

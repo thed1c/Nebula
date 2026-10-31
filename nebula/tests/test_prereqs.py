@@ -101,22 +101,35 @@ class PrereqsTest(unittest.TestCase):
         self.assertTrue(said[1].startswith("Halo's model: not fetched now (the server's name does not resolve"), said)
         self.assertIn("Nebula fetches it by itself when it opens", said[1])
 
-    def test_the_log_keeps_every_line_and_each_failure_in_full(self):
-        conf = os.path.join(self.tmp, "conf")
-        os.makedirs(conf)
+    def _main_in(self, conf, **patches):
+        os.makedirs(conf, exist_ok=True)
         cfg_path = os.path.join(conf, "nebula.json")
         json.dump({"port": 0, "ledger": os.path.join(self.tmp, "l.sqlite3"), "tiers": []}, open(cfg_path, "w"))
-        with mock.patch.object(prereqs, "qdrant", side_effect=RuntimeError("no network at all")), \
+        with mock.patch.object(prereqs, "qdrant", **patches), \
              mock.patch.object(prereqs, "hub_probe", return_value=None), \
              mock.patch.object(prereqs, "report", return_value=[]), \
              mock.patch("builtins.print"):
             prereqs.main(["--config", cfg_path, "--dest", self.tmp,
                           "--skip", "cuda,halo,halo-runtime,embeddings,docling,openshell,docker"])
-        log = Path(conf, "prereqs.log").read_text(encoding="utf-8")
+        prereqs.LOG = None
+        return Path(conf, "prereqs-errors.log")
+
+    def test_the_log_has_only_the_failures_in_full(self):
+        conf = os.path.join(self.tmp, "conf")
+        log = self._main_in(conf, side_effect=RuntimeError("no network at all")).read_text(encoding="utf-8")
+        self.assertIn("qdrant: not fetched now (no network at all)", log)
         self.assertIn("Traceback", log)
         self.assertIn("RuntimeError: no network at all", log)
-        self.assertIn("qdrant: not fetched now (no network at all)", log)
-        prereqs.LOG = None
+        self.assertNotIn("[nebula]", log)
+        self.assertEqual(log.count("Traceback"), 1)
+        again = self._main_in(conf, side_effect=RuntimeError("still none")).read_text(encoding="utf-8")
+        self.assertNotIn("no network at all", again)                 # replaced each run, never appended
+        self.assertIn("still none", again)
+
+    def test_no_log_when_every_step_goes_through(self):
+        conf = os.path.join(self.tmp, "conf")
+        self.assertTrue(self._main_in(conf, side_effect=RuntimeError("down")).exists())
+        self.assertFalse(self._main_in(conf, return_value="Lookup's vector store: already here").exists())
 
     def test_lookups_folder_is_the_one_lookup_uses(self):
         self.assertEqual(prereqs.lookup_dir(cfg_in(self.tmp)), os.path.join(self.tmp, "nebula-lookup"))

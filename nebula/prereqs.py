@@ -83,21 +83,24 @@ WantedBy=default.target
 """
 
 
-LOG: Path | None = None            # <settings folder>/prereqs.log: every line said, and each failure in full
+# <settings folder>/prereqs-errors.log: only when a step failed, its reason and its traceback; replaced each run, and
+# removed when every step went through (the Linux installer keeps what was said in prereqs.log, as before)
+LOG: Path | None = None
+FAILURES: list[str] = []
 
 
 def say(*a) -> None:
     print("[nebula]", *a, flush=True)
-    _log(" ".join(str(x) for x in a))
 
 
-def _log(text: str) -> None:
+def _write_log() -> None:
     if LOG is None:
         return
-    import time
     try:
-        with open(LOG, "a", encoding="utf-8") as f:
-            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + text.rstrip() + "\n")
+        if FAILURES:
+            LOG.write_text("\n".join(FAILURES), encoding="utf-8")
+        elif LOG.exists():
+            LOG.unlink()
     except OSError:
         pass
 
@@ -248,11 +251,9 @@ def embeddings(cfg) -> str:
     models = st.get("models_dir") or os.environ.get("FASTEMBED_CACHE_PATH") or os.path.join(lookup_dir(cfg), "models")   # as Lookup reads it
     from fastembed import TextEmbedding
     from fastembed.rerank.cross_encoder import TextCrossEncoder
-    try:                                                           # fastembed's ERROR lines (one per retry) go to the log
+    try:                                                           # fastembed's ERROR lines (one per retry): not shown
         from loguru import logger
         logger.remove()
-        if LOG is not None:
-            logger.add(str(LOG), level="WARNING")
     except Exception:  # noqa: BLE001 - only its log lines
         pass
     try:                                                           # already here: nothing to fetch
@@ -458,8 +459,10 @@ FROM_HUB = ("halo", "embeddings", "docling")
 
 
 def run(cfg, dest: str, skip: set[str]) -> int:
+    import time
     import traceback
     failed = 0
+    FAILURES.clear()
     global HUB_DOWN
     unreachable = HUB_DOWN = None
     if any(s not in skip for s in FROM_HUB):
@@ -475,10 +478,12 @@ def run(cfg, dest: str, skip: set[str]) -> int:
             say(msg)
         except Exception as e:  # noqa: BLE001 - each piece on its own: the rest still installs
             failed += 1
-            _log(traceback.format_exc())
             why = str(e) if isinstance(e, Unreached) else (unreachable if step in FROM_HUB and unreachable else str(e))
             later = LATER.get(step) or ("run Setup again later" if WINDOWS else "run again later: python -m nebula.prereqs")
-            say(f"{NAMES.get(step, step)}: not fetched now ({why[:200]}); {later}")
+            line = f"{NAMES.get(step, step)}: not fetched now ({why[:200]}); {later}"
+            say(line)
+            FAILURES.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n{traceback.format_exc()}")
+    _write_log()
     for line in report():
         say(line)
     return failed
@@ -491,12 +496,7 @@ def main(argv=None) -> int:
     ap.add_argument("--skip", default="", help="steps to leave out, comma separated: " + ",".join(STEPS))
     a = ap.parse_args(argv)
     global LOG
-    LOG = Path(os.path.dirname(os.path.abspath(a.config)), "prereqs.log")
-    try:
-        LOG.parent.mkdir(parents=True, exist_ok=True)
-        _log(f"--- nebula.prereqs {sys.version.split()[0]} on {sys.platform}")
-    except OSError:
-        LOG = None
+    LOG = Path(os.path.dirname(os.path.abspath(a.config)), "prereqs-errors.log")
     netwhy.use_system_certs()          # this process only downloads: what the system trusts, as pip does
     from nebula.config import Config
     cfg = Config.from_args(["--config", a.config])
