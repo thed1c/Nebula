@@ -28,6 +28,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from nebula import netwhy
+
 QUANT = re.compile(r"(?i)(?:^|[-_.])((?:I?Q\d(?:_[A-Z0-9]+)*)|BF16|F16|F32|MXFP4(?:_MOE)?)(?=[-_.]|$)")
 SHARD = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 
@@ -239,8 +241,9 @@ class Pulls:
             h["Range"] = f"bytes={have}-"
         f["state"] = "downloading"
         req = urllib.request.Request(url, headers=h)
+        ctx = netwhy.tls_context()                           # Windows/macOS: what the system trusts, as pip does
         try:
-            r = urllib.request.urlopen(req, timeout=60)
+            r = urllib.request.urlopen(req, timeout=60, context=ctx) if ctx else urllib.request.urlopen(req, timeout=60)
         except urllib.error.HTTPError as e:
             if e.code == 416 and have:                       # already whole
                 return False
@@ -280,7 +283,10 @@ class Pulls:
         url = f"{endpoint()}/{p['repo']}/resolve/{rev}/{urllib.parse.quote(f['path'])}"
         # a dropped connection or a stalled read mid-file (a 30 GB file is read for many minutes) picks up from the bytes
         # already on disk (Range), up to RETRIES times with a growing pause; the Hub's own refusals are not retried
-        for attempt in range(RETRIES + 1):
+        # only tries that brought no new bytes count: a slow or flaky link that keeps moving is never given up on
+        attempt = 0
+        while True:
+            before = os.path.getsize(part) if os.path.exists(part) else 0
             try:
                 if self._fetch(p, f, url, part, token):
                     return                                   # paused
@@ -288,10 +294,17 @@ class Pulls:
             except HfError:
                 raise
             except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
-                if attempt == RETRIES or p["cancel"]:
-                    raise HfError(502, f"{f['path']}: the download kept breaking off ({e}); pull again to resume") from None
-                f["state"] = f"retrying ({attempt + 1}/{RETRIES}): {str(e)[:80]}"
-                time.sleep(min(60, 2 ** (attempt + 1)))
+                if (os.path.getsize(part) if os.path.exists(part) else 0) > before:
+                    attempt = 0
+                attempt += 1
+                if attempt > RETRIES or p["cancel"]:
+                    got = os.path.getsize(part) if os.path.exists(part) else 0
+                    if not got:                              # not one byte: the Hub cannot be reached from here
+                        raise HfError(502, f"{f['path']}: Hugging Face cannot be reached from here: {netwhy.cause(e)}") from None
+                    raise HfError(502, f"{f['path']}: the download kept breaking off ({netwhy.cause(e)}); "
+                                       "pull again to resume") from None
+                f["state"] = f"retrying ({attempt}/{RETRIES}): {netwhy.cause(e)[:80]}"
+                time.sleep(min(60, 2 ** attempt))
         if f["sha256"]:
             f["state"] = "checking"
             h = hashlib.sha256()

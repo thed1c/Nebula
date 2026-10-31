@@ -9,7 +9,7 @@ description = "Nebula: your own AI environment above local engines, cloud provid
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
-dependencies = ["jinja2>=3.1"]
+dependencies = ["jinja2>=3.1", "truststore>=0.10; sys_platform == 'win32' or sys_platform == 'darwin'"]   # downloads trust what the system trusts, as pip does (nebula/netwhy.py)
 
 [project.optional-dependencies]
 monitor = ["psutil>=5.9"]

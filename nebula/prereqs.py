@@ -39,6 +39,8 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+from nebula import netwhy
+
 CUDA_WHEELS = ["nvidia-cuda-runtime==13.2.86", "nvidia-cublas==13.4.1.3"]    # what Impulse was built with (CUDA 13.2.2)
 OPENSHELL_VERSION = "0.1.4"
 OPENSHELL_FILES = {            # GitHub's own digests of the v0.1.4 release files (x86-64 Linux)
@@ -81,8 +83,23 @@ WantedBy=default.target
 """
 
 
+LOG: Path | None = None            # <settings folder>/prereqs.log: every line said, and each failure in full
+
+
 def say(*a) -> None:
     print("[nebula]", *a, flush=True)
+    _log(" ".join(str(x) for x in a))
+
+
+def _log(text: str) -> None:
+    if LOG is None:
+        return
+    import time
+    try:
+        with open(LOG, "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + text.rstrip() + "\n")
+    except OSError:
+        pass
 
 
 def _sha256(p: Path) -> str:
@@ -162,6 +179,8 @@ def halo_model(cfg) -> str:
     if found and Path(found) != Path(hm.base_path(models, m)):
         # the installer's copy, NEBULA_HALO_BASE, or the owner's link to one elsewhere: theirs, never replaced
         return f"Halo's model: {found} is not the version this Nebula pins; left as it is"
+    if HUB_DOWN:                                                   # no minutes of retries against a Hub that is not there
+        raise Unreached(HUB_DOWN)
     pulls = Pulls(models)
     pid = hm.ensure_base(pulls, m)                                 # a pin that moved: the new file, checked
     while pid is not None:
@@ -172,6 +191,30 @@ def halo_model(cfg) -> str:
             break
         time.sleep(1)
     return f"Halo's model: in place ({what}, checked against its sha256)"
+
+
+# --- Hugging Face, where Halo's and Lookup's models come from
+HUB_DOWN: str | None = None      # why Hugging Face cannot be reached from here (run() asks once), else None
+
+
+class Unreached(RuntimeError):
+    """A piece that could not be fetched now; its message is the reason in plain words."""
+
+
+def hub() -> str:
+    from nebula.hf import endpoint
+    return endpoint()
+
+
+def hub_probe(cfg) -> str | None:
+    """None when Hugging Face answers from here (its download servers too: Halo's file, its first byte), else why not."""
+    from nebula import halo_model as hm
+    try:
+        b = hm.manifest()["base"]
+        url = f"{hub()}/{b['repo']}/resolve/{b['revision']}/{b['file']}"
+    except Exception:  # noqa: BLE001
+        url = f"{hub()}/api/models/Qdrant/bge-small-en-v1.5-onnx-Q"
+    return netwhy.probe(url)
 
 
 # --- Lookup
@@ -205,9 +248,33 @@ def embeddings(cfg) -> str:
     models = st.get("models_dir") or os.environ.get("FASTEMBED_CACHE_PATH") or os.path.join(lookup_dir(cfg), "models")   # as Lookup reads it
     from fastembed import TextEmbedding
     from fastembed.rerank.cross_encoder import TextCrossEncoder
-    TextEmbedding(DEFAULT_EMBED, cache_dir=models)                 # downloads once, checked by fastembed
-    TextCrossEncoder(DEFAULT_RERANK, cache_dir=models)
-    return f"Lookup's models: {DEFAULT_EMBED} and {DEFAULT_RERANK} in place"
+    try:                                                           # fastembed's ERROR lines (one per retry) go to the log
+        from loguru import logger
+        logger.remove()
+        if LOG is not None:
+            logger.add(str(LOG), level="WARNING")
+    except Exception:  # noqa: BLE001 - only its log lines
+        pass
+    try:                                                           # already here: nothing to fetch
+        TextEmbedding(DEFAULT_EMBED, cache_dir=models, local_files_only=True)
+        TextCrossEncoder(DEFAULT_RERANK, cache_dir=models, local_files_only=True)
+        return f"Lookup's models: already here ({DEFAULT_EMBED}, {DEFAULT_RERANK})"
+    except Exception:  # noqa: BLE001 - not (all) here yet
+        pass
+    if HUB_DOWN:
+        raise Unreached(HUB_DOWN)
+    import time
+    for attempt in range(3):                                       # fastembed tries 3 times in 12 s; a longer breath here
+        try:
+            TextEmbedding(DEFAULT_EMBED, cache_dir=models)         # downloads once, checked by fastembed
+            TextCrossEncoder(DEFAULT_RERANK, cache_dir=models)
+            return f"Lookup's models: {DEFAULT_EMBED} and {DEFAULT_RERANK} in place"
+        except Exception as e:  # noqa: BLE001 - fastembed says only "from any source": find the reason
+            why = netwhy.probe(f"{hub()}/api/models/Qdrant/bge-small-en-v1.5-onnx-Q")
+            if why or attempt == 2:
+                raise Unreached(why or str(e)) from e
+            time.sleep(30 * (attempt + 1))
+    raise AssertionError("unreachable")
 
 
 def tiny_pdf() -> bytes:
@@ -382,8 +449,23 @@ def report() -> list[str]:
 STEPS = ("cuda", "halo", "halo-runtime", "qdrant", "embeddings", "docling", "openshell", "docker")
 
 
+# what Nebula does by itself for a piece the install could not fetch (so the person needs to do nothing)
+LATER = {"halo": "Nebula fetches it by itself when it opens",
+         "embeddings": "Lookup fetches them by itself the first time it reads a document",
+         "docling": "Lookup fetches them by itself the first time it reads a document"}
+NAMES = {"halo": "Halo's model", "embeddings": "Lookup's models", "docling": "Document reading's models"}
+FROM_HUB = ("halo", "embeddings", "docling")
+
+
 def run(cfg, dest: str, skip: set[str]) -> int:
+    import traceback
     failed = 0
+    global HUB_DOWN
+    unreachable = HUB_DOWN = None
+    if any(s not in skip for s in FROM_HUB):
+        unreachable = HUB_DOWN = hub_probe(cfg)
+        if unreachable:
+            say(f"Hugging Face (where Halo's and Lookup's models come from) cannot be reached from here: {unreachable}")
     for step in STEPS:
         if step in skip:
             continue
@@ -393,7 +475,10 @@ def run(cfg, dest: str, skip: set[str]) -> int:
             say(msg)
         except Exception as e:  # noqa: BLE001 - each piece on its own: the rest still installs
             failed += 1
-            say(f"{step}: not done now ({str(e)[:200]}); run again later: python -m nebula.prereqs")
+            _log(traceback.format_exc())
+            why = str(e) if isinstance(e, Unreached) else (unreachable if step in FROM_HUB and unreachable else str(e))
+            later = LATER.get(step) or ("run Setup again later" if WINDOWS else "run again later: python -m nebula.prereqs")
+            say(f"{NAMES.get(step, step)}: not fetched now ({why[:200]}); {later}")
     for line in report():
         say(line)
     return failed
@@ -405,6 +490,14 @@ def main(argv=None) -> int:
     ap.add_argument("--dest", default=str(Path(sys.executable).resolve().parents[2]), help="the install folder (beside python/)")
     ap.add_argument("--skip", default="", help="steps to leave out, comma separated: " + ",".join(STEPS))
     a = ap.parse_args(argv)
+    global LOG
+    LOG = Path(os.path.dirname(os.path.abspath(a.config)), "prereqs.log")
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        _log(f"--- nebula.prereqs {sys.version.split()[0]} on {sys.platform}")
+    except OSError:
+        LOG = None
+    netwhy.use_system_certs()          # this process only downloads: what the system trusts, as pip does
     from nebula.config import Config
     cfg = Config.from_args(["--config", a.config])
     run(cfg, a.dest, {s.strip() for s in a.skip.split(",") if s.strip()})

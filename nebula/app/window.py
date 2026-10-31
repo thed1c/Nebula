@@ -27,6 +27,9 @@ import webbrowser
 APP_ID = "nebula-eh"                    # the window class Linux docks group by (the .desktop file's StartupWMClass)
 BG = "#08070f"
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg")
+# Windows' window icon: pywebview 6 hands it to .NET's System.Drawing.Icon, which reads .ico only; an .svg there throws
+# ArgumentException on the UI thread and the app dies before its window shows (an install of 0.1.5, 2026-10-31)
+ICON_ICO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
 
 
 def _has_gtk() -> str | None:
@@ -89,7 +92,8 @@ def _pywebview(url, html, title, width, height) -> None:
             except (ValueError, OSError):
                 pass
     gui = "gtk" if sys.platform.startswith("linux") and _has_gtk() else None   # not Qt first on KDE (it may be absent)
-    webview.start(gui=gui, private_mode=False, storage_path=os.path.join(tempfile.gettempdir(), APP_ID), icon=ICON)
+    icon = ICON_ICO if os.name == "nt" else ICON
+    webview.start(gui=gui, private_mode=False, storage_path=os.path.join(tempfile.gettempdir(), APP_ID), icon=icon)
 
 
 def _gtk(url, html, title, width, height, version) -> None:

@@ -76,14 +76,47 @@ class PrereqsTest(unittest.TestCase):
         cfg = cfg_in(self.tmp)
         said = []
         with mock.patch.object(prereqs, "qdrant", side_effect=RuntimeError("no network")), \
+             mock.patch.object(prereqs, "hub_probe", return_value=None), \
              mock.patch.object(prereqs, "embeddings", return_value="Lookup's models: in place"), \
              mock.patch.object(prereqs, "report", return_value=["No Docker: ..."]), \
              mock.patch.object(prereqs, "say", side_effect=lambda *a: said.append(" ".join(a))):
             failed = prereqs.run(cfg, self.tmp, {"cuda", "halo", "halo-runtime", "docling", "openshell", "docker"})
         self.assertEqual(failed, 1)
-        self.assertTrue(any("qdrant: not done now (no network)" in s and "python -m nebula.prereqs" in s for s in said), said)
+        self.assertTrue(any("qdrant: not fetched now (no network)" in s and "python -m nebula.prereqs" in s for s in said), said)
         self.assertIn("Lookup's models: in place", said)
         self.assertIn("No Docker: ...", said)
+
+    def test_a_hub_out_of_reach_is_said_once_with_its_reason_and_nebula_fetches_later(self):
+        cfg = cfg_in(self.tmp)
+        said = []
+        why = "the server's name does not resolve (no internet, or a DNS filter or this network blocks it)"
+        with mock.patch.object(prereqs, "hub_probe", return_value=why), \
+             mock.patch("nebula.halo_engine.find_base", return_value=None), \
+             mock.patch("nebula.hf.Pulls.start", side_effect=AssertionError("no download tried")), \
+             mock.patch.object(prereqs, "report", return_value=[]), \
+             mock.patch.object(prereqs, "say", side_effect=lambda *a: said.append(" ".join(a))):
+            failed = prereqs.run(cfg, self.tmp, {"cuda", "halo-runtime", "qdrant", "embeddings", "docling", "openshell", "docker"})
+        self.assertEqual(failed, 1)
+        self.assertIn("cannot be reached from here: " + why, said[0])
+        self.assertTrue(said[1].startswith("Halo's model: not fetched now (the server's name does not resolve"), said)
+        self.assertIn("Nebula fetches it by itself when it opens", said[1])
+
+    def test_the_log_keeps_every_line_and_each_failure_in_full(self):
+        conf = os.path.join(self.tmp, "conf")
+        os.makedirs(conf)
+        cfg_path = os.path.join(conf, "nebula.json")
+        json.dump({"port": 0, "ledger": os.path.join(self.tmp, "l.sqlite3"), "tiers": []}, open(cfg_path, "w"))
+        with mock.patch.object(prereqs, "qdrant", side_effect=RuntimeError("no network at all")), \
+             mock.patch.object(prereqs, "hub_probe", return_value=None), \
+             mock.patch.object(prereqs, "report", return_value=[]), \
+             mock.patch("builtins.print"):
+            prereqs.main(["--config", cfg_path, "--dest", self.tmp,
+                          "--skip", "cuda,halo,halo-runtime,embeddings,docling,openshell,docker"])
+        log = Path(conf, "prereqs.log").read_text(encoding="utf-8")
+        self.assertIn("Traceback", log)
+        self.assertIn("RuntimeError: no network at all", log)
+        self.assertIn("qdrant: not fetched now (no network at all)", log)
+        prereqs.LOG = None
 
     def test_lookups_folder_is_the_one_lookup_uses(self):
         self.assertEqual(prereqs.lookup_dir(cfg_in(self.tmp)), os.path.join(self.tmp, "nebula-lookup"))
