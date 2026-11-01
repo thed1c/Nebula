@@ -73,3 +73,35 @@ class PiecesOutOfTheInstallerTest(unittest.TestCase):
         src = (ROOT / "greenfield" / "package.py").read_text()
         self.assertNotIn("--halo-server", src)
         self.assertNotIn("llama-server.bin", src)
+
+
+class WindowsSetupClosesNebulaTest(unittest.TestCase):
+    """A Nebula left running held its Python's files: Setup removed what it could, fetched Python over the rest and pip
+    failed on files in use, under a message about the internet connection (a 0.1.6.1 install, 2026-11-01)."""
+    WIN = ROOT / "greenfield" / "windows"
+
+    def test_setup_closes_nebula_before_it_removes_anything(self):
+        nsi = (self.WIN / "installer.nsi").read_text()
+        section = nsi[nsi.index('Section "Nebula EH"'):]
+        self.assertLess(section.index("close-nebula.ps1"), section.index("RMDir"))
+        self.assertIn('StrCmp $1 "3"', section[:section.index("RMDir")])        # still in use: stop, nothing touched
+        self.assertNotIn("taskkill /F /IM", nsi)                              # never by name: other programs stay
+
+    def test_the_close_script_finds_nebula_by_path_and_says_when_it_cannot(self):
+        ps = (self.WIN / "close-nebula.ps1").read_text()
+        self.assertIn("Win32_Process", ps)
+        self.assertIn("ExecutablePath", ps)
+        self.assertIn("exit 3", ps)
+        self.assertNotIn("-Name", ps.split("function InUse")[0])               # no Get-Process -Name / image names
+
+    def test_files_in_use_are_not_blamed_on_the_connection(self):
+        ps = (self.WIN / "install.ps1").read_text()
+        self.assertGreaterEqual(ps.count("exit 3"), 2)                         # tar over files in use, and pip
+        nsi = (self.WIN / "installer.nsi").read_text()
+        self.assertIn("some of its files are in use", nsi)
+
+    def test_the_finish_page_opens_nebula_as_the_user(self):
+        nsi = (self.WIN / "installer.nsi").read_text()
+        fn = nsi[nsi.index("Function OpenNebula"):nsi.index("FunctionEnd")]
+        self.assertIn("explorer.exe", fn)
+        self.assertNotIn("pythonw.exe", fn)

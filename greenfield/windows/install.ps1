@@ -21,7 +21,12 @@ if (-not (Test-Path $py)) {
     Remove-Item $tgz -Force; Say "Python's download did not check out (sha256): run Setup again."; exit 1
   }
   tar -xzf $tgz -C $Dest
+  $untar = $LASTEXITCODE
   Remove-Item $tgz -Force
+  if ($untar -ne 0) {                                    # files of a Python still running could not be replaced
+    Say "Python could not be unpacked: some of its files are in use (Nebula EH still running?). Close it, or restart Windows, then run Setup again."
+    exit 3
+  }
 }
 
 Say "Installing Nebula's packages (a few minutes)..."
@@ -35,7 +40,13 @@ New-Item -ItemType Directory -Force $Conf | Out-Null
 # this script on the first one: from here, a program's own exit code says whether it worked
 $ErrorActionPreference = "Continue"
 & $py @pipArgs *> (Join-Path $Conf "pip.log")
-if ($LASTEXITCODE -ne 0) { Say ("Installing Nebula's packages failed (see {0}): check the connection and run Setup again." -f (Join-Path $Conf "pip.log")); exit 1 }
+if ($LASTEXITCODE -ne 0) {
+  # a file in use (Nebula still running) is not the connection: say which it is
+  if (Select-String -Path (Join-Path $Conf "pip.log") -Pattern "WinError 5\]|WinError 32\]|being used by another process" -Quiet) {
+    Say ("Installing Nebula's packages failed: some of its files are in use (Nebula EH still running?). Close it, or restart Windows, then run Setup again (see {0})." -f (Join-Path $Conf "pip.log")); exit 3
+  }
+  Say ("Installing Nebula's packages failed (see {0}): check the connection and run Setup again." -f (Join-Path $Conf "pip.log")); exit 1
+}
 
 # what this installer put in place: Nebula's updater offers a small update (code alone) to an install made by its base
 $info = @{ base = $online.version; version = $online.version; extras = $online.extras; extra_index = "$($online.extra_index)" } | ConvertTo-Json -Compress

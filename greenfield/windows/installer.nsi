@@ -25,21 +25,28 @@ ShowInstDetails show
 !insertmacro MUI_LANGUAGE "English"
 
 Function OpenNebula
-  SetOutPath "$APPDATA\nebula"
-  Exec '"$INSTDIR\python\pythonw.exe" -m nebula.app --config "$APPDATA\nebula\nebula.json"'
+  ; through Explorer and the Start menu's icon: Nebula opens as the signed-in user even when Setup itself was started as
+  ; administrator (a Nebula left running as administrator holds its files, and the next Setup cannot close it)
+  Exec '"$WINDIR\explorer.exe" "$SMPROGRAMS\Nebula EH.lnk"'
 FunctionEnd
 
 Section "Nebula EH"
-  ; a running Nebula holds its files: ask it to close first
-  nsExec::Exec 'taskkill /F /IM impulse-server.exe'
-  nsExec::Exec 'taskkill /F /IM llama-server.exe'
-  nsExec::Exec 'taskkill /F /IM nvpair-ui-broker.exe'
+  ; a running Nebula holds its files: close it first (its programs, found by their path), and stop here, with nothing
+  ; touched, when its files are still in use (a Nebula started as administrator, which this user cannot close)
+  InitPluginsDir
+  File "/oname=$PLUGINSDIR\close-nebula.ps1" "close-nebula.ps1"
+  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\close-nebula.ps1" -Dest "$INSTDIR" -Conf "$APPDATA\nebula"'
+  Pop $1
+  StrCmp $1 "3" 0 +3
+    MessageBox MB_ICONSTOP "Nebula EH is still running (possibly as administrator): close it, or restart Windows, then run Setup again." /SD IDOK
+    Abort
   RMDir /r "$INSTDIR\python"
   RMDir /r "$INSTDIR\impulse"
   RMDir /r "$INSTDIR\halo"
   RMDir /r "$INSTDIR\pair"
   SetOutPath "$INSTDIR"
   File /r "${PAYLOAD}\*.*"
+  File "close-nebula.ps1"                     ; the uninstaller closes Nebula the same way
   ; the first settings (kept on an update)
   CreateDirectory "$APPDATA\nebula"
   IfFileExists "$APPDATA\nebula\nebula.json" +4 0
@@ -50,9 +57,13 @@ Section "Nebula EH"
   DetailPrint "Installing from the internet (Python, Nebula's packages, models): a few minutes..."
   nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\install.ps1" -Dest "$INSTDIR" -Conf "$APPDATA\nebula"'
   Pop $1
-  StrCmp $1 "0" +3 0
-    MessageBox MB_ICONSTOP "Nebula EH could not finish installing: the lines above say why. Check the internet connection and run Setup again." /SD IDOK
+  StrCmp $1 "0" install_ok 0
+  StrCmp $1 "3" 0 +3
+    MessageBox MB_ICONSTOP "Nebula EH could not finish installing: some of its files are in use (Nebula EH still running, possibly as administrator). Close it, or restart Windows, then run Setup again." /SD IDOK
     Abort
+  MessageBox MB_ICONSTOP "Nebula EH could not finish installing: the lines above say why (often the internet connection). Fix that and run Setup again." /SD IDOK
+  Abort
+  install_ok:
   ; the Safe sandbox (sandbox.ps1): engines in containers (Podman in WSL2), as on Linux; declined or failed, they run as
   ; plain programs with a warning. Turning WSL2 on asks for an administrator once, and may need one restart.
   MessageBox MB_YESNO|MB_ICONQUESTION "Run your models in a Safe sandbox?$\r$\n$\r$\nNebula puts each engine in its own container (WSL2 + Podman), as it does on Linux. If WSL2 is not on this PC yet, Windows asks for an administrator once and may need one restart (the sandbox then finishes by itself at your next sign-in).$\r$\n$\r$\nNo: engines run as plain programs, with a warning." /SD IDYES IDNO sandbox_no
@@ -77,9 +88,8 @@ Section "Nebula EH"
 SectionEnd
 
 Section "Uninstall"
-  nsExec::Exec 'taskkill /F /IM impulse-server.exe'
-  nsExec::Exec 'taskkill /F /IM llama-server.exe'
-  nsExec::Exec 'taskkill /F /IM nvpair-ui-broker.exe'
+  IfFileExists "$INSTDIR\close-nebula.ps1" 0 +2
+    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\close-nebula.ps1" -Dest "$INSTDIR" -Conf "$APPDATA\nebula"'
   Delete "$SMPROGRAMS\Nebula EH.lnk"
   Delete "$DESKTOP\Nebula EH.lnk"
   ; the Safe sandbox's distro and its images go too (WSL itself, your models and settings stay)

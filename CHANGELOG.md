@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.1.6.2
+
+**Windows: Setup closes Nebula first.** Setup over a Nebula that was still open left part of its Python in place (the
+files Nebula had open), unpacked a new Python over them and failed while installing Nebula's packages, with a message
+about the internet connection. Setup now closes Nebula and the programs it started (found by where they are installed,
+so other programs are left alone) before it changes anything. If a Nebula it cannot close is still running (one started
+as administrator), Setup stops at once, before changing anything, and says so. When files in use stop an install, the
+message says that instead of blaming the connection. Setup's "Open Nebula EH" now opens Nebula as you even when Setup
+itself ran as administrator, and the uninstaller closes Nebula the same way.
 
 **Add a server: engines start on machines with Podman 5.** On a model machine whose Podman is version 5 (Ubuntu 25.10
 and later), an engine's sandbox failed at once: NVIDIA's description of the cards for containers (CDI) carries the
