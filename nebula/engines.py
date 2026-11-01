@@ -45,6 +45,7 @@ import time
 from pathlib import Path
 
 from nebula.app.engine import EngineProcess, health
+from nebula.privdir import private_dir
 
 KINDS = ("impulse", "llama.cpp", "command")        # the first two are packages (nebula/packages.py)
 REMOVED_KINDS = {"strata": "impulse"}             # the owner, 2026-10-25: "Yes. Remove it." (Strata's package); its engines load as Impulse
@@ -214,7 +215,7 @@ def ensure_key(path: str) -> str:
             return k
     except OSError:
         pass
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    private_dir(os.path.dirname(path))
     k = secrets.token_urlsafe(32)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -347,6 +348,21 @@ def cards() -> list[dict]:
             except ValueError:
                 continue
     return rows
+
+
+# Impulse's builds (CUDA 13) carry kernels from compute capability 7.5 up (RTX 20 / GTX 16 and newer): CUDA 13 cannot build
+# for older cards (a GTX 10, Pascal, is 6.1), so on such a card Impulse's engines run on the CPU only
+IMPULSE_MIN_CC = (7, 5)
+
+
+def card_too_old(c: dict) -> str | None:
+    """Why Impulse cannot use this card (older than its build supports), in plain words; None when it can or when the
+    card does not say its compute capability."""
+    m = re.match(r"^\s*(\d+)\.(\d+)\s*$", str(c.get("compute_cap") or ""))
+    if not m or (int(m.group(1)), int(m.group(2))) >= IMPULSE_MIN_CC:
+        return None
+    return (f"{c.get('name') or 'this card'} is older than this engine build supports (compute {m.group(1)}.{m.group(2)}; it "
+            f"needs {IMPULSE_MIN_CC[0]}.{IMPULSE_MIN_CC[1]} or newer): it runs on the CPU (an older-card engine download is coming)")
 
 
 def cards_of(spec: dict, have: list[dict]) -> list[dict]:
@@ -817,6 +833,9 @@ class Engines:
         gone = next((c for c in cs if c.get("missing")), None)
         if gone:
             raise EngineSpecError(f"engine {name}: this machine has no card {gone['missing']}")
+        old = next((r for r in map(card_too_old, cs) if r), None) if s.get("kind") == "impulse" else None
+        if old:
+            raise EngineSpecError(f"engine {name}: {old}")
         f = fit(s, self.cfg.base_dir, have)
         if f.get("fits") is False:
             raise EngineSpecError(f"engine {name}: {f['why']}")
@@ -961,7 +980,7 @@ class Engines:
         kp, key_file = key_path(s, self.cfg), None
         if kp and (wsl or os.getuid() > 0):
             kdir = os.path.join(os.path.dirname(kp), "sandbox-" + s["name"])
-            os.makedirs(kdir, mode=0o700, exist_ok=True)
+            private_dir(kdir)
             os.chmod(kdir, 0o700)
             dst = os.path.join(kdir, "key")
             fd = os.open(dst + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -999,6 +1018,9 @@ class Engines:
         gone = next((c for c in cs if c.get("missing")), None)
         if gone:
             raise EngineSpecError(f"engine {name}: {s['machine']} has no card {gone['missing']}")
+        old = next((r for r in map(card_too_old, cs) if r), None) if s.get("kind") == "impulse" else None
+        if old:
+            raise EngineSpecError(f"engine {name}: {old}")
         if s["kind"] == "command":                           # a container engine: its image and its command as given
             with self.lock:
                 p = self.procs.get(name)

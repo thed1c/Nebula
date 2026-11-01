@@ -30,6 +30,7 @@ import re
 import shlex
 import subprocess
 import tarfile
+from nebula.privdir import private_dir
 
 NODE_DIR = ".local/share/nebula-node"            # on the model machine, under the user's home
 NODE_STATE = ".local/state/nebula-node"
@@ -321,7 +322,7 @@ def trust(known_hosts: str, host: str, port: int, fingerprint: str) -> dict:
     keys = [k for k in scan(host, port) if k["fingerprint"] == fingerprint]
     if not keys:
         raise SshError("the host no longer shows that key: refused")
-    os.makedirs(os.path.dirname(known_hosts), mode=0o700, exist_ok=True)
+    private_dir(os.path.dirname(known_hosts))
     with open(known_hosts, "a", encoding="utf-8") as f:
         f.write(kh_name(host, port) + " " + keys[0]["line"].split(" ", 1)[1] + "\n")     # under the name Target asks for
     os.chmod(known_hosts, 0o600)

@@ -78,6 +78,7 @@ from nebula.activity import Watch
 from nebula.dialects import Context, JsonReply, SseReply, sse_frame
 from nebula.dialects.chat import chat
 from nebula.handoff import preamble, rendered_message
+from nebula.privdir import private_dir
 from nebula.ledger import text_of
 
 LOG = logging.getLogger("cockpit.ui")
@@ -322,7 +323,7 @@ def provider_models(base_url: str, api_key: str | None) -> list[str]:
 def _keys_dir(cfg) -> str:
     import os
     d = names.local_path(cfg.base_dir, "nebula-keys", "cockpit-keys")
-    os.makedirs(d, mode=0o700, exist_ok=True)
+    private_dir(d)
     return d
 
 

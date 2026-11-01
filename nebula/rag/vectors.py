@@ -26,6 +26,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from nebula.privdir import private_dir
+
 LOG = logging.getLogger("nebula.lookup")
 QDRANT_VERSION = "v1.19.2"
 QDRANT_RELEASES = {          # the pinned release's files and their sha256 (GitHub's own digests)
@@ -131,7 +133,7 @@ class QdrantProcess:
                 return k
         except OSError:
             pass
-        os.makedirs(os.path.dirname(self.key_path), mode=0o700, exist_ok=True)
+        private_dir(os.path.dirname(self.key_path))
         k = secrets.token_urlsafe(32)
         fd = os.open(self.key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:

@@ -60,6 +60,7 @@ import re
 import time
 
 from nebula import engines as E
+from nebula.privdir import private_dir
 
 
 class YardError(ValueError):
@@ -177,7 +178,9 @@ def get(server, path: str, query: str = "") -> dict | None:
         return {"pulls": pulls(server).status(), "models_dir": models_dir(server), "token": bool(pulls(server).token())}
     if path == "/api/yard/engines":
         from nebula import machines
-        return {"engines": yard.status(), "cards": E.cards() + machines.cards(server.cfg), "kinds": list(E.KINDS),
+        cards = [{**c, **({"too_old": E.card_too_old(c)} if E.card_too_old(c) else {})}    # Impulse cannot use it: said, greyed out
+                 for c in E.cards() + machines.cards(server.cfg)]
+        return {"engines": yard.status(), "cards": cards, "kinds": list(E.KINDS),
                 "cache_types": list(E.CACHE_BYTES), "machines": [s["name"] for s in server.cfg.raw.get("servers") or [] if s.get("gateway")]}
     if path.startswith("/api/yard/engines/"):
         name = path[len("/api/yard/engines/"):].strip("/")
@@ -254,7 +257,7 @@ def post(server, path: str, req: dict) -> dict | None:
             md = models_dir(server)
             os.makedirs(md, exist_ok=True)
             r["disk_free"] = shutil.disk_usage(md).free
-            cards = E.cards()
+            cards = [c for c in E.cards() if not E.card_too_old(c)]          # a card Impulse cannot use is no place for it
             best = max((c["memory_mb"] - c["used_mb"] for c in cards), default=None)
             for c in r["choices"]:
                 c["fits_disk"] = c["size"] <= r["disk_free"]
@@ -593,7 +596,7 @@ def _register_gateway(server, t, name: str) -> tuple[str, int]:
     mtls = os.path.join(conf, "gateways", gw, "mtls")
     subprocess.run([exe, "gateway", "remove", gw], capture_output=True, timeout=60, stdin=subprocess.DEVNULL)   # added again
     for fname, text in sshinstall.gateway_certs(t).items():
-        os.makedirs(mtls, mode=0o700, exist_ok=True)
+        private_dir(mtls)
         fd = os.open(os.path.join(mtls, fname), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)

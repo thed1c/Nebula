@@ -38,6 +38,7 @@ from nebula.admission import Admission
 from nebula.parking import Lot
 from nebula.registry import Registry
 from nebula.router import Rules
+from nebula.privdir import private_dir
 
 LOG = logging.getLogger("cockpit")
 PASSTHROUGH = ("/health", "/props", "/slots", "/metrics")
@@ -869,7 +870,7 @@ def sandbox_tokens(srv) -> None:
         if sb is None or not (t.sandbox or {}).get("model_via_nebula"):
             continue
         keys = names.local_path(cfg.base_dir, "nebula-keys", "cockpit-keys")
-        os.makedirs(keys, mode=0o700, exist_ok=True)
+        private_dir(keys)
         path = os.path.join(keys, f"sandbox-{t.name}.key")
         try:
             with open(path, encoding="utf-8") as f:

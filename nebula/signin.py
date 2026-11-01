@@ -25,6 +25,7 @@ import secrets
 import threading
 import time
 import urllib.parse
+from nebula.privdir import private_dir
 
 SESSION_S = 12 * 3600
 CHALLENGE_S = 120
@@ -464,7 +465,7 @@ def write_admin_token(cfg, token: str) -> str | None:
         return None
     from nebula import names
     d = names.local_path(cfg.base_dir, "nebula-keys", "cockpit-keys")
-    os.makedirs(d, mode=0o700, exist_ok=True)
+    private_dir(d)
     p = os.path.join(d, "admin.token")
     fd = os.open(p + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:

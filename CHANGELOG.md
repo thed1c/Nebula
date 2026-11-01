@@ -10,6 +10,17 @@ as administrator), Setup stops at once, before changing anything, and says so. W
 message says that instead of blaming the connection. Setup's "Open Nebula EH" now opens Nebula as you even when Setup
 itself ran as administrator, and the uninstaller closes Nebula the same way.
 
+**Windows: a Nebula once opened as administrator no longer locks you out of your own settings.** Nebula kept its keys
+and a few other folders readable by their owner only; a Nebula opened as administrator (Setup's "Open Nebula EH" after
+running Setup as administrator) made the Administrators group their owner, and the Nebula you open normally could not
+read them afterwards (Halo, for one, did not start). These folders are now plain folders in your own profile, which is
+yours alone already. A folder an earlier run locked stays locked until it is given back (see the release notes).
+
+**Older NVIDIA cards are said as such.** Impulse's engines need a card of compute capability 7.5 or newer (RTX 20,
+GTX 16 and newer). An older card (a GTX 10, for one) is now shown as "older than this engine build: CPU only", is never
+picked for an engine, Halo or a guided setup, and an engine set to it stops at once with that reason instead of a
+generic failure. Models still run on the CPU there. An engine build for older cards is planned as an optional download.
+
 **Add a server: engines start on machines with Podman 5.** On a model machine whose Podman is version 5 (Ubuntu 25.10
 and later), an engine's sandbox failed at once: NVIDIA's description of the cards for containers (CDI) carries the
 video and render groups, Podman 5 hands them to the container, and OpenShell then refuses the sandbox ("supplementary

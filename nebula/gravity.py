@@ -38,6 +38,7 @@ import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from nebula.privdir import private_dir
 
 LOG = logging.getLogger("nebula.gravity")
 ENROLL, MODELS, LOAD, INFER, ADMIN = (b"gravity/enroll/1", b"gravity/models/1", b"gravity/load/1",
@@ -191,7 +192,7 @@ class GravityNode:
             return open(p, "rb").read()
         raw = iroh.SecretKey.generate().to_bytes()
         if p:
-            os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
+            private_dir(os.path.dirname(p))
             fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "wb") as f:
                 f.write(raw)

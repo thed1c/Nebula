@@ -25,6 +25,7 @@ import threading
 import time
 
 from nebula.engine import EngineError
+from nebula.privdir import private_dir
 
 STDIN_CAP = 4 * 1024 * 1024
 KEEPALIVE = ["sleep", "infinity"]
@@ -151,7 +152,7 @@ class Sandbox:
             return path if os.path.isabs(path) or not self.base_dir else os.path.join(self.base_dir, path)
         text = policy_yaml(self.cli, self.spec.get("hosts") or [], self.binaries(), self.nebula_endpoint)
         d = os.path.join(self.base_dir or os.getcwd(), "cockpit-sandbox")
-        os.makedirs(d, mode=0o700, exist_ok=True)
+        private_dir(d)
         path = os.path.join(d, f"{self.name}.policy.yaml")
         try:
             with open(path, encoding="utf-8") as f:

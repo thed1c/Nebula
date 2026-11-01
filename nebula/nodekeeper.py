@@ -34,6 +34,7 @@ import time
 import urllib.parse
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from nebula.privdir import private_dir
 
 PASS_POST = ("/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses", "/v1/embeddings",
              "/completion", "/tokenize", "/detokenize", "/chat/completions", "/completions", "/embeddings")
@@ -304,7 +305,7 @@ class Keeper:
             conn.close()
 
     def run(self):
-        os.makedirs(self.state, mode=0o700, exist_ok=True)
+        private_dir(self.state)
         self.load_engines()
         self.serve_facade()
         self.start_broker()

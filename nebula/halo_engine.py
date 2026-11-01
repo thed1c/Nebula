@@ -234,6 +234,7 @@ class HaloEngine:
         except Exception:  # noqa: BLE001 - no cards: the CPU
             have = []
         self.no_cards = not have                          # said on Halo's panel: no GPU here, not "no room"
+        have = [c for c in have if not engines.card_too_old(c)]   # older than Impulse's build: Halo stays on the CPU
         specs = (self.cfg.raw or {}).get("engines") or []
         try:                                              # only cards its Impulse build has kernels for (sm_75 is not in every one)
             from nebula import machines

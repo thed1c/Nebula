@@ -405,6 +405,7 @@ def _cards_for(a: dict) -> str | None:
         have = engines.cards()
     except Exception:  # noqa: BLE001
         have = []
+    have = [c for c in have if not engines.card_too_old(c)]       # older than Impulse's build: the model stays in RAM
     if not have:
         return None
     best = max(have, key=lambda c: int(c.get("memory_mb", 0)) - int(c.get("used_mb", 0)))

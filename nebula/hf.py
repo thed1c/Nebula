@@ -29,6 +29,7 @@ import uuid
 from pathlib import Path
 
 from nebula import netwhy
+from nebula.privdir import private_dir
 
 QUANT = re.compile(r"(?i)(?:^|[-_.])((?:I?Q\d(?:_[A-Z0-9]+)*)|BF16|F16|F32|MXFP4(?:_MOE)?)(?=[-_.]|$)")
 SHARD = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
@@ -165,7 +166,7 @@ class Pulls:
         if not token:
             Path(self.token_path).unlink(missing_ok=True)
             return False
-        os.makedirs(os.path.dirname(self.token_path), mode=0o700, exist_ok=True)
+        private_dir(os.path.dirname(self.token_path))
         fd = os.open(self.token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(token.strip() + "\n")
