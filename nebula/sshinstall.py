@@ -83,6 +83,31 @@ UMask=0077
 [Install]
 WantedBy=default.target
 UNIT
+# Podman 5 hands NVIDIA's CDI additionalGids (the video and render groups) to a container, and OpenShell's supervisor
+# then refuses the sandbox ("sandbox supplementary groups [..] do not match resolved workload []"). Podman 4 cannot
+# read them at all (the administrator's cdi-podman task covers it). For Podman 5: this user's Podman reads the cards
+# from its own copy without them, written again whenever NVIDIA's own description changes.
+if command -v nvidia-ctk >/dev/null 2>&1 && command -v podman >/dev/null 2>&1 && \
+   ! podman --version 2>/dev/null | awk '{print $3}' | grep -q '^4\.'; then
+  cat > "$D/nebula-cdi-user" <<'SCRIPT'
+#!/bin/sh
+# Written by Nebula: NVIDIA's CDI description of this machine's cards for this user's Podman, without additionalGids
+set -e
+mkdir -p "$HOME/.config/nebula-cdi"
+nvidia-ctk cdi generate --format=json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); [e.get("containerEdits", {}).pop("additionalGids", None) for e in d.get("devices", []) + [d]]; json.dump(d, open(sys.argv[1], "w"), indent=1)' "$HOME/.config/nebula-cdi/nvidia.json.tmp"
+mv "$HOME/.config/nebula-cdi/nvidia.json.tmp" "$HOME/.config/nebula-cdi/nvidia.json"
+SCRIPT
+  chmod 755 "$D/nebula-cdi-user"
+  "$D/nebula-cdi-user"
+  mkdir -p "$HOME/.config/containers/containers.conf.d"
+  printf '# Written by Nebula: the cards from the copy without additionalGids (nebula-cdi-user)\n[engine]\ncdi_spec_dirs = ["%s/.config/nebula-cdi"]\n' "$HOME" \
+    > "$HOME/.config/containers/containers.conf.d/nebula-cdi.conf"
+  printf '[Unit]\nDescription=NVIDIA cards described for this user'"'"'s Podman (written by Nebula)\n\n[Service]\nType=oneshot\nExecStart=%s\n' "$D/nebula-cdi-user" \
+    > "$U/nebula-cdi-user.service"
+  printf '[Unit]\nDescription=Describe the NVIDIA cards to this user'"'"'s Podman again when NVIDIA does (written by Nebula)\n\n[Path]\nPathChanged=/var/run/cdi/nvidia.yaml\nPathChanged=/etc/cdi/nvidia.yaml\n\n[Install]\nWantedBy=default.target\n' \
+    > "$U/nebula-cdi-user.path"
+  CDI_USER=1
+fi
 cat > "$U/nebula-node.service" <<UNIT
 [Unit]
 Description=Model machine for a Nebula on your network (the network's node programs and the node keeper)
@@ -99,6 +124,7 @@ WantedBy=default.target
 UNIT
 systemctl --user daemon-reload
 systemctl --user enable --now podman.socket
+[ -n "${CDI_USER:-}" ] && { systemctl --user enable --now nebula-cdi-user.path; systemctl --user restart podman.service 2>/dev/null || true; }
 systemctl --user enable openshell-gateway.service nebula-node.service
 systemctl --user restart openshell-gateway.service nebula-node.service
 for i in $(seq 1 90); do [ -S "$S/keeper.sock" ] && [ -f "$HOME/.local/state/openshell/tls/client/tls.crt" ] && break; sleep 1; done
@@ -117,6 +143,9 @@ if [ -f "$U/openshell-gateway.service" ] && grep -q "for a Nebula on your networ
   systemctl --user disable --now openshell-gateway.service 2>/dev/null || true; rm -f "$U/openshell-gateway.service"
   if grep -qs "written by Nebula" "$OC/gateway.toml"; then rm -rf "$OC" "$HOME/.local/state/openshell"; fi
 fi
+systemctl --user disable --now nebula-cdi-user.path 2>/dev/null || true
+rm -f "$U/nebula-cdi-user.path" "$U/nebula-cdi-user.service" "$HOME/.config/containers/containers.conf.d/nebula-cdi.conf"
+rm -rf "$HOME/.config/nebula-cdi"
 systemctl --user daemon-reload 2>/dev/null || true
 pkill -f "$D/" 2>/dev/null || true
 rm -rf "$D" "$S" "$HOME/nebula-node.tar"

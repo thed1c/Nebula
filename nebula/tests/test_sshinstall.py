@@ -1,7 +1,9 @@
 """Add a server (SSH) (nebula/sshinstall.py): only the model-machine pieces go over SSH (PAIR's node programs, the node
 keeper, OpenShell), never a Nebula; what needs an administrator; the scripts' syntax."""
 import io
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -114,6 +116,28 @@ class AdminTest(unittest.TestCase):
             self.assertIn(w, cmd)
         p = subprocess.run(["sh", "-n"], input=S._sudo_script([cmd]), capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stderr)
+
+    @linux_only
+    def test_podman_5_reads_the_cards_without_their_groups(self):
+        # OpenShell's supervisor refuses a sandbox that CDI's additionalGids gave groups to (seen with Podman 5.7, toolkit
+        # 1.20.1); the node's own install gives this user's Podman a copy of the description without them
+        sh = S.INSTALL_SH
+        for w in ("grep -q '^4\\.'", 'cdi_spec_dirs = ["%s/.config/nebula-cdi"]', "PathChanged=/var/run/cdi/nvidia.yaml",
+                  "enable --now nebula-cdi-user.path", "restart podman.service"):
+            self.assertIn(w, sh)
+        for w in ("nebula-cdi-user.path", "containers.conf.d/nebula-cdi.conf", ".config/nebula-cdi"):
+            self.assertIn(w, S.UNINSTALL_SH)
+        code = re.search(r"python3 -c '([^']+)'", sh[sh.index("nebula-cdi-user\" <<"):]).group(1)
+        spec = {"cdiVersion": "0.7.0", "kind": "nvidia.com/gpu", "containerEdits": {"additionalGids": [44, 991], "env": ["A=1"]},
+                "devices": [{"name": "0", "containerEdits": {"deviceNodes": [{"path": "/dev/nvidia0"}], "additionalGids": [44, 991]}}]}
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "nvidia.json")
+            p = subprocess.run([sys.executable, "-c", code, out], input=json.dumps(spec), capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            got = json.load(open(out))
+        self.assertNotIn("additionalGids", json.dumps(got))
+        self.assertEqual(got["devices"][0]["containerEdits"]["deviceNodes"], [{"path": "/dev/nvidia0"}])
+        self.assertEqual(got["containerEdits"]["env"], ["A=1"])
 
     def test_no_user_systemd_is_said(self):
         notes = [n["words"] for n in S.admin_needs(["user systemd: no", "podman: 4.9.3", "uidmap: yes"], local_firewall=False)]

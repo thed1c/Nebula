@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+**Add a server: engines start on machines with Podman 5.** On a model machine whose Podman is version 5 (Ubuntu 25.10
+and later), an engine's sandbox failed at once: NVIDIA's description of the cards for containers (CDI) carries the
+video and render groups, Podman 5 hands them to the container, and OpenShell then refuses the sandbox ("supplementary
+groups ... do not match"). Podman 4 never read those groups, which is why only newer machines hit it. Adding a server
+now gives that user's Podman its own copy of the card description without the groups, and writes it again whenever
+NVIDIA's own description changes (a driver update, a card moved). Removing the server removes it too.
+
 ## 0.1.6.1
 
 **Windows: the Update button works.** On Windows, Nebula's Update closed Nebula, but its helper stopped before putting
