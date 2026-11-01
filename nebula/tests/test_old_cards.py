@@ -26,7 +26,7 @@ class CardTooOldTest(unittest.TestCase):
         self.assertIn("GTX 1080 Ti is older than this engine build supports", why)
         self.assertIn("compute 6.1", why)
         self.assertIn("runs on the CPU", why)
-        self.assertIn("older-card engine download is coming", why)
+        self.assertIn("older-card engine download is planned", why)
 
     def test_supported_or_unknown_cards_are_fine(self):
         for cc in ("7.5", "8.6", "12.0", "10.0", "", None, "N/A", "[Not Supported]"):

@@ -362,7 +362,7 @@ def card_too_old(c: dict) -> str | None:
     if not m or (int(m.group(1)), int(m.group(2))) >= IMPULSE_MIN_CC:
         return None
     return (f"{c.get('name') or 'this card'} is older than this engine build supports (compute {m.group(1)}.{m.group(2)}; it "
-            f"needs {IMPULSE_MIN_CC[0]}.{IMPULSE_MIN_CC[1]} or newer): it runs on the CPU (an older-card engine download is coming)")
+            f"needs {IMPULSE_MIN_CC[0]}.{IMPULSE_MIN_CC[1]} or newer): it runs on the CPU (an older-card engine download is planned)")
 
 
 def cards_of(spec: dict, have: list[dict]) -> list[dict]:
