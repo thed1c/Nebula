@@ -60,7 +60,7 @@ On the System page, **Updates** has the choice and **Look now**.
 
        python3 greenfield/sign_feed.py --version 0.1.3 --notes "What changed, in plain words" \
          --file linux-x86_64=dist/nebula-eh-0.1.3-linux-x86_64.run=https://github.com/thed1c/Nebula/releases/download/v0.1.3/nebula-eh-0.1.3-linux-x86_64.run \
-         --file windows-x86_64=dist/Nebula-EH-Setup-0.1.3.exe=https://github.com/thed1c/Nebula/releases/download/v0.1.3/Nebula-EH-Setup-0.1.3.exe \
+         --file windows-x86_64-u2=dist/Nebula-EH-Setup-0.1.3.exe=https://github.com/thed1c/Nebula/releases/download/v0.1.3/Nebula-EH-Setup-0.1.3.exe \
          --out ../nebula-updates
 
    It reads each file's sha256 from the file itself, refuses a key that is not the one Nebula trusts, and writes
@@ -68,9 +68,13 @@ On the System page, **Updates** has the choice and **Look now**.
    add the small update `package.py` wrote beside each installer, with the installers' versions it fits on:
 
        --app linux-x86_64=dist/nebula-eh-0.1.4.1-app-linux-x86_64.tar.gz=https://github.com/thed1c/Nebula/releases/download/v0.1.4.1/nebula-eh-0.1.4.1-app-linux-x86_64.tar.gz=0.1.4 \
-       --app windows-x86_64=dist/nebula-eh-0.1.4.1-app-windows-x86_64.tar.gz=https://github.com/thed1c/Nebula/releases/download/v0.1.4.1/nebula-eh-0.1.4.1-app-windows-x86_64.tar.gz=0.1.4
+       --app windows-x86_64-u2=dist/nebula-eh-0.1.4.1-app-windows-x86_64.tar.gz=https://github.com/thed1c/Nebula/releases/download/v0.1.4.1/nebula-eh-0.1.4.1-app-windows-x86_64.tar.gz=0.1.4
 
    (attach those files to the release too).
+
+   Windows files go under `windows-x86_64-u2`, read by Windows Nebulas from 0.1.6.1 on. Never publish `windows-x86_64`:
+   Windows 0.1.5 and 0.1.6 read that key, and their update helper dies before the update runs (Nebula would close and not
+   come back); without it, their button opens the release page.
 3. Commit both to the public `thed1c/nebula-updates` repository. Each Nebula sees it at its next start ("launch") or its next **Look now**.
 
 A new key (only if the old one is lost: every Nebula already out trusts the old one) is

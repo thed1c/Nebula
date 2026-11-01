@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.1.6.1
 
 **Windows: the Update button works.** On Windows, Nebula's Update closed Nebula, but its helper stopped before putting
-the new version in place, so Nebula did not come back. The helper now runs to the end and reopens Nebula.
+the new version in place, so Nebula did not come back. The helper now runs to the end and reopens Nebula. Windows
+installs of 0.1.5 and 0.1.6 are never offered an update through the button (theirs would close Nebula for nothing): it
+opens the release page, and their Setup installs 0.1.6.1. From 0.1.6.1 on, Windows updates come through the button.
 
 ## 0.1.6
 

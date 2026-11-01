@@ -494,3 +494,9 @@ class WindowsHelperFlagsTest(unittest.TestCase):
         from nebula import updates
         self.assertFalse(updates.HELPER_FLAGS & 0x00000008)
         self.assertTrue(updates.HELPER_FLAGS & 0x08000000)           # still no console window
+
+    def test_windows_reads_its_own_feed_key(self):
+        # older Windows Nebulas (helper broken) read "windows-x86_64": the feed leaves it out, so they open the release page
+        from nebula import updates
+        with mock.patch.object(updates.os, "name", "nt"), mock.patch("platform.machine", return_value="AMD64"):
+            self.assertEqual(updates.platform_key(), "windows-x86_64-u2")

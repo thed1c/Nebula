@@ -190,7 +190,10 @@ def platform_key() -> str | None:
     arch = platform.machine().lower().replace("amd64", "x86_64")
     if arch != "x86_64":
         return None
-    return "windows-x86_64" if os.name == "nt" else ("linux-x86_64" if sys.platform.startswith("linux") else None)
+    # Windows reads "windows-x86_64-u2" since 0.1.6.1: before it, a Windows Nebula's update helper died before the update
+    # ran (HELPER_FLAGS), so the feed offers Windows files only under this key; 0.1.5/0.1.6 look for "windows-x86_64",
+    # find none, and their button opens the release page
+    return "windows-x86_64-u2" if os.name == "nt" else ("linux-x86_64" if sys.platform.startswith("linux") else None)
 
 
 def read_feed(body: bytes, sig: bytes, public_key: str = None) -> dict | None:

@@ -7,7 +7,7 @@
         nebula/updates.py's PUBLIC_KEY. An existing key is never overwritten.
     python3 greenfield/sign_feed.py --version 0.1.3 --notes "What changed, in plain words" \\
             --file linux-x86_64=dist/nebula-eh-0.1.3-linux-x86_64.run=https://github.com/thed1c/Nebula/releases/download/v0.1.3/nebula-eh-0.1.3-linux-x86_64.run \\
-            --file windows-x86_64=dist/Nebula-EH-Setup-0.1.3.exe=https://github.com/.../Nebula-EH-Setup-0.1.3.exe \\
+            --file windows-x86_64-u2=dist/Nebula-EH-Setup-0.1.3.exe=https://github.com/.../Nebula-EH-Setup-0.1.3.exe \\
             [--app linux-x86_64=dist/nebula-eh-0.1.4.1-app-linux-x86_64.tar.gz=https://.../nebula-eh-0.1.4.1-app-linux-x86_64.tar.gz=0.1.4] \\
             --out feed/
         latest.json (each file's sha256 read from the file itself) and latest.json.sig beside it, ready to commit to the
@@ -101,7 +101,7 @@ def main(argv=None) -> int:
     ap.add_argument("--public", action="store_true", help="print the key's public half")
     ap.add_argument("--version")
     ap.add_argument("--notes", default="")
-    ap.add_argument("--file", action="append", default=[], help="PLATFORM=LOCAL_FILE=URL (linux-x86_64, windows-x86_64)")
+    ap.add_argument("--file", action="append", default=[], help="PLATFORM=LOCAL_FILE=URL (linux-x86_64; windows-x86_64-u2: Windows from 0.1.6.1, whose update helper works)")
     ap.add_argument("--app", action="append", default=[],
                     help="a small update: PLATFORM=LOCAL_FILE=URL=BASES (the installers' versions it fits on, comma separated; "
                          "only when Impulse and the rest beside Nebula did not change since those)")
