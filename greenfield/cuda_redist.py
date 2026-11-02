@@ -3,6 +3,8 @@
 
     python3 greenfield/cuda_redist.py --platform linux-x86_64   --out cuda
     python3 greenfield/cuda_redist.py --platform windows-x86_64 --out cuda
+    python3 greenfield/cuda_redist.py --platform linux-x86_64   --out cuda12 --version 12.9.1   (Impulse (L): Maxwell
+                                                                                                  to Volta, gone in CUDA 13)
 
 No installer and no root: the release runners use it (greenfield's release workflow), and so can anyone building
 Impulse without a system CUDA. Every archive is checked against the sha256 NVIDIA's manifest gives. Then
@@ -57,10 +59,14 @@ def main(argv=None) -> int:
     ap.add_argument("--platform", choices=["linux-x86_64", "windows-x86_64"], required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--cache", type=Path, default=Path(tempfile.gettempdir()) / "cuda-redist")
+    ap.add_argument("--version", default=VERSION, help=f"NVIDIA's redistributable release (default {VERSION})")
     a = ap.parse_args(argv)
-    man = json.loads(fetch(f"{BASE}redistrib_{VERSION}.json", a.cache / f"redistrib_{VERSION}.json").read_text())
+    man = json.loads(fetch(f"{BASE}redistrib_{a.version}.json", a.cache / f"redistrib_{a.version}.json").read_text())
     a.out.mkdir(parents=True, exist_ok=True)
     for c in COMPONENTS:
+        if c not in man:                     # cuda_crt and libnvvm: archives of their own from CUDA 13 (12.x: inside cuda_nvcc)
+            print(f"[cuda] {c}: not in {a.version}", flush=True)
+            continue
         ent = man[c][a.platform]
         arc = fetch(BASE + ent["relative_path"], a.cache / Path(ent["relative_path"]).name, ent["sha256"])
         with tempfile.TemporaryDirectory() as d:
@@ -75,7 +81,7 @@ def main(argv=None) -> int:
     lib64 = a.out / "lib64"
     if a.platform.startswith("linux") and not lib64.exists():
         lib64.symlink_to("lib")                                 # nvcc.profile links from lib64, the archives ship lib
-    print(json.dumps({"cuda": VERSION, "out": str(a.out)}))
+    print(json.dumps({"cuda": a.version, "out": str(a.out)}))
     return 0
 
 
