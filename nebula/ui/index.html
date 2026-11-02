@@ -2425,15 +2425,20 @@
       <div class="line" style="margin-top:6px">${ring === "red" || ring === "orange" ? '<button type="button" class="btn" data-halo-seen>Seen</button>' : ""}<button type="button" class="btn" data-halo-check>Look now</button></div>
       <details><summary><small>Security log (recent)</small></summary>${(state.secEvents || []).map(e => `<div><small>${ago(e.last_at)} <b>${esc(e.kind)}</b> ${esc(e.who || "")} ${esc(e.what || "")}${e.count > 1 ? " ×" + e.count : ""}</small></div>`).join("") || '<small class="muted">nothing yet</small>'}</details>`;
   }
+  // A model picker's option value: tier and model as JSON. It used to join them with a NUL character, which the HTML
+  // parser turns into U+FFFD when the options are written as HTML, so picking a model failed with "no tier named 'x\ufffd'"
+  const routeKey = (x) => x && x.tier ? JSON.stringify([x.tier, x.model || ""]) : "";
+  const routeOf = (v) => { try { const [tier, model] = JSON.parse(v); return { tier: tier || "", model: model || "" }; } catch { return { tier: "", model: "" }; } };
+  const routeBody = (v) => { const { tier, model } = v ? routeOf(v) : { tier: "" }; return { route: tier ? { tier, model: model || null } : {} }; };
   // The chat is the Assistant: its model picker sets the Assistant's model (Nebula routes it, or a dedicated one)
   function assistantPicker() {
     const st = state.stars, sel = $("tier"); if (!st || !st.serving || document.activeElement === sel) return;
-    const r = st.assistant.route || {}, key = (x) => x && x.tier ? x.tier + "\u0000" + (x.model || "") : "";
+    const r = st.assistant.route || {}, key = routeKey;
     const html = `<option value="">Nebula routes it</option>` + (st.assistant.choices || []).map(c => `<option value="${esc(key(c))}">${esc(c.label)}</option>`).join("");
     if (sel.dataset.assistant !== html) { sel.innerHTML = html; sel.dataset.assistant = html; }
     sel.value = key(r); sel.title = "Halo's model";
-    sel.onchange = async () => { const [tier, model] = sel.value ? sel.value.split("\u0000") : ["", ""];
-      try { await postJ("/api/stars/assistant", { route: tier ? { tier, model: model || null } : {} }); await loadStars(); } catch (e) { showErr(e.message); } };
+    sel.onchange = async () => {
+      try { await postJ("/api/stars/assistant", routeBody(sel.value)); await loadStars(); } catch (e) { showErr(e.message); } };
   }
   setInterval(() => { if (!document.hidden) loadStars(); }, 5000);
   loadStars();
@@ -2447,9 +2452,8 @@
   function closeStar() { starOpen = null; $("starpanel").hidden = true; }
   const spCopy = (text) => `<button type="button" class="btn" data-copy="${esc(text)}" title="copy">copy</button>`;
   function routeSelect(id, cur, choices) {
-    const val = (r) => r && r.tier ? r.tier + "\u0000" + (r.model || "") : "";
     return `<select data-route="${id}"><option value="">Nebula routes it</option>${(choices || []).map(c =>
-      `<option value="${esc(c.tier + "\u0000" + (c.model || ""))}" ${val(cur) === c.tier + "\u0000" + (c.model || "") ? "selected" : ""}>${esc(c.label)}</option>`).join("")}</select>`;
+      `<option value="${esc(routeKey(c))}" ${routeKey(cur) === routeKey(c) ? "selected" : ""}>${esc(c.label)}</option>`).join("")}</select>`;
   }
   function renderStar() {
     const st = state.stars, p = $("starpanel"); if (!st || !starOpen) return;
@@ -2513,14 +2517,13 @@
     const run = async (fn) => { try { await fn(); await loadStars(); syncModels(lastRows || []); } catch (e) { say(e.message); } };
     p.querySelector("[data-close]").onclick = closeStar;
     for (const b of p.querySelectorAll("[data-copy]")) b.onclick = () => { navigator.clipboard?.writeText(b.dataset.copy); b.textContent = "copied"; };
-    for (const sel of p.querySelectorAll("[data-route]")) sel.onchange = () => run(() => { const [tier, model] = sel.value ? sel.value.split("\u0000") : ["", ""];
-      return postJ("/api/stars/" + sel.dataset.route, { route: tier ? { tier, model: model || null } : {} }); });
+    for (const sel of p.querySelectorAll("[data-route]")) sel.onchange = () => run(() => postJ("/api/stars/" + sel.dataset.route, routeBody(sel.value)));
     const req = p.querySelector("[data-require]"); if (req) req.onchange = () => run(() => postJ("/api/stars/api", { require_key: req.checked }).catch(e => { req.checked = false; throw e; }));
     const nk = p.querySelector("[data-newkey]"); if (nk) nk.onclick = () => run(async () => { const r = await postJ("/api/stars/api/keys", { label: $("sp-keylabel").value }); newKey = r.key; })
       .then(() => $("starpanel").querySelector(".newkey")?.scrollIntoView({ block: "nearest" }));
     for (const b of p.querySelectorAll("[data-revoke]")) b.onclick = () => { if (confirm("Revoke this key? Apps using it stop working.")) run(() => postJ(`/api/stars/api/keys/${b.dataset.revoke}/revoke`, {})); };
     const ho = p.querySelector("[data-halo-on]"); if (ho) ho.onchange = () => run(() => postJ("/api/halo", { on: ho.checked }));
-    const hr = p.querySelector("[data-halo-route]"); if (hr) hr.onchange = () => run(() => { const [tier, model] = hr.value ? hr.value.split("\u0000") : ["", ""]; return postJ("/api/halo", { route: tier ? { tier, model: model || null } : {} }); });
+    const hr = p.querySelector("[data-halo-route]"); if (hr) hr.onchange = () => run(() => postJ("/api/halo", routeBody(hr.value)));
     for (const b of p.querySelectorAll("[data-halo-undo]")) b.onclick = () => run(() => postJ(`/api/halo/actions/${b.dataset.haloUndo}/undo`, {}));
     const hs = p.querySelector("[data-halo-seen]"); if (hs) hs.onclick = () => run(() => postJ("/api/halo/seen", {}));
     for (const r of p.querySelectorAll("[data-halo-where]")) r.onchange = () => run(() => postJ("/api/halo", { where: r.value }));
@@ -4594,8 +4597,8 @@
         <div class="row"><button class="btn pri" id="cm-new">New conversation</button></div>`;
       $("cm-halo").onchange = (e) => postJ("/api/halo", { on: e.target.checked }).then(loadHalo).catch(x => alert(x.message));
       $("cm-tools").onchange = (e) => postJ("/api/stars/assistant", { tools: e.target.checked }).then(loadStars).catch(x => alert(x.message));
-      body.querySelector("[data-route]").onchange = (e) => { const [tier, model] = e.target.value ? e.target.value.split("\u0000") : ["", ""];
-        postJ("/api/stars/assistant", { route: tier ? { tier, model: model || null } : {} }).then(loadStars).catch(x => alert(x.message)); };
+      body.querySelector("[data-route]").onchange = (e) => {
+        postJ("/api/stars/assistant", routeBody(e.target.value)).then(loadStars).catch(x => alert(x.message)); };
       $("cm-new").onclick = () => { closeCoreMenu(); fresh(); };
     } else {
       const cols = st.lookup?.library?.collections || [];
