@@ -73,6 +73,17 @@ class PiecesTest(unittest.TestCase):
             self.assertFalse((base / "nebula-impulse-flashnext").exists())
             self.assertEqual([p.name for p in base.iterdir()], [])                      # no temporary left either
 
+    def test_a_piece_published_with_a_later_release_names_its_own_version(self):
+        with self.catalog("ab" * 32):
+            self.assertTrue(pieces.pin("impulse-flashnext")["url"].endswith("/impulse-flashnext-9.9-linux-x86_64.tar.gz"))
+            m = json.loads(pieces.CATALOG.read_text())
+            m["pieces"]["impulse-flashnext"]["version"] = "10.0"
+            pieces.CATALOG.write_text(json.dumps(m))
+            p = pieces.pin("impulse-flashnext")
+            self.assertEqual((p["version"], p["url"].rsplit("/", 1)[1]), ("10.0", "impulse-flashnext-10.0-linux-x86_64.tar.gz"))
+        m = json.loads(pieces.CATALOG.read_text())                       # the real catalog: Impulse (L) comes with 0.1.7
+        self.assertEqual(m["pieces"]["impulse-legacy"]["version"], "0.1.7")
+
     def test_an_unpublished_piece_says_so(self):
         with self.catalog(""):
             self.assertIsNone(pieces.pin("impulse-flashnext"))

@@ -40,9 +40,10 @@ def pin(name: str) -> dict | None:
     f = (p.get("files") or {}).get(platform_key()) or {}
     if not f.get("sha256"):
         return None
-    url = (m["url"].replace("{version}", m["version"]).replace("{piece}", name)
+    ver = p.get("version") or m["version"]              # a piece published with a later release names its own
+    url = (m["url"].replace("{version}", ver).replace("{piece}", name)
            .replace("{platform}", platform_key()).replace("{ext}", f["ext"]))
-    return {"url": url, "sha256": f["sha256"], "bytes": int(f.get("bytes") or 0), "ext": f["ext"], "version": m["version"],
+    return {"url": url, "sha256": f["sha256"], "bytes": int(f.get("bytes") or 0), "ext": f["ext"], "version": ver,
             "label": p.get("label") or name, "why": p.get("why") or ""}
 
 

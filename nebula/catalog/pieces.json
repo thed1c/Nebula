@@ -21,6 +21,7 @@
    }
   },
   "impulse-legacy": {
+   "version": "0.1.7",
    "label": "Impulse (L)",
    "why": "the engine for older NVIDIA cards (Maxwell, Pascal, Volta: GTX 900 and 10 series, Titan X / Xp / V, Tesla M, P and V100), which Impulse's main build cannot run",
    "program": "impulse-server",
