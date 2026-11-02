@@ -1,6 +1,6 @@
 """greenfield/impulse_dist.py: the installer's impulse/ folder carries the Flash-Next engine when the build has it
 (impulse-fx beside impulse-server.bin, which execs it from its own folder, and the engine library it loads), all of it
-or none, and --require-fx refuses a build without it."""
+or none, and --require-fx refuses a build without it; --legacy (Impulse (L), CUDA 12) uses only its own folder."""
 import importlib.util
 import shutil
 import sys
@@ -49,6 +49,25 @@ class ImpulseDistTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as e:
             self.run_dist("--require-fx")
         self.assertIn("IMPULSE_FLASHNEXT", str(e.exception))
+
+    def test_legacy_looks_only_beside_itself(self):
+        self.assertEqual(self.run_dist("--legacy"), 0)
+        wrapper = (self.out / "impulse-server").read_text()
+        self.assertIn('LD_LIBRARY_PATH="$D${LD_LIBRARY_PATH', wrapper)
+        self.assertNotIn("cu13", wrapper)
+        self.assertIn('exec "$D/impulse-server.bin"', wrapper)
+
+    def test_legacy_refuses_cuda13(self):
+        lib = self.cuda / "lib" / "libcudart.so.13"
+        shutil.copy2(EXE, lib)
+        orig = D.bundle_linux
+        D.bundle_linux = lambda exe, cuda, out: shutil.copy2(lib, out / lib.name)   # as if the build linked CUDA 13
+        try:
+            with self.assertRaises(SystemExit) as e:
+                self.run_dist("--legacy")
+        finally:
+            D.bundle_linux = orig
+        self.assertIn("libcudart.so.13", str(e.exception))
 
     def test_half_of_it_is_refused(self):
         self.fx("impulse-fx")

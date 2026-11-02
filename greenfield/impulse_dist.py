@@ -3,6 +3,7 @@
 
     python3 greenfield/impulse_dist.py --platform linux   --build build-impulse --cuda cuda --out impulse-dist
     python3 greenfield/impulse_dist.py --platform windows --build build-impulse --cuda cuda --out impulse-dist
+    python3 greenfield/impulse_dist.py --platform linux   --build build-legacy --cuda cuda12 --legacy   (-> impulse-legacy)
 
 Linux:   impulse-server (a wrapper that puts the folder on LD_LIBRARY_PATH) + impulse-server.bin + the CUDA runtime and
          cuBLAS it links + libgomp (ldd says which).
@@ -12,6 +13,9 @@ Both:    the Flash-Next engine when the build has it (-DIMPULSE_FLASHNEXT=ON): i
 Windows: impulse-server.exe + cudart64/cublas64/cublasLt64 + the MSVC runtime and OpenMP DLLs (app-local, as
          Microsoft allows), so no Visual C++ redistributable is needed.
 Only the NVIDIA driver (libcuda / nvcuda.dll) stays the machine's own.
+--legacy: Impulse (L), the CUDA 12 build for Maxwell to Volta (sm_50 to sm_70, which CUDA 13 dropped). Its folder,
+         impulse-legacy, always carries its own CUDA 12 runtime and cuBLAS, and its wrapper looks only there: never at
+         the installer Python's nvidia/cu13 packages, whose CUDA 13 libraries cannot run these cards.
 """
 from __future__ import annotations
 
@@ -29,6 +33,12 @@ WRAPPER = """#!/bin/sh
 # the installer's Python (the online installer)
 D=$(dirname "$(readlink -f "$0")")
 LD_LIBRARY_PATH="$D:$D/../python/lib/python3.12/site-packages/nvidia/cu13/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$D/impulse-server.bin" "$@"
+"""
+LEGACY_WRAPPER = """#!/bin/sh
+# Impulse (L): impulse-server with the CUDA 12 runtime beside it, and only that (the installer's CUDA 13 cannot run
+# Maxwell to Volta)
+D=$(dirname "$(readlink -f "$0")")
+LD_LIBRARY_PATH="$D${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$D/impulse-server.bin" "$@"
 """
 LINUX_BUNDLE = ("libcudart.so", "libcublas.so", "libcublasLt.so", "libgomp.so")
 FX = {"linux": ("impulse-fx", "libimpulse_fx.so", "libstrata_kq.so"), "windows": ("impulse-fx.exe", "impulse_fx.dll")}
@@ -57,18 +67,29 @@ def bundle_linux(exe: Path, cuda: Path, out: Path) -> None:
                 shutil.copy2(os.path.realpath(parts[2]), out / parts[0])
 
 
-def linux(build: Path, cuda: Path, out: Path, require_fx: bool = False) -> None:
+def no_cuda13(out: Path) -> None:
+    """Impulse (L)'s folder: refuse a CUDA library of 13 or newer (built or bundled with the wrong toolkit)."""
+    for f in out.iterdir():
+        for stem in ("libcudart.so.", "libcublas.so.", "libcublasLt.so.", "cudart64_", "cublas64_", "cublasLt64_"):
+            major = f.name[len(stem):].split(".")[0] if f.name.startswith(stem) else ""
+            if major.isdigit() and int(major) >= 13:
+                raise SystemExit(f"--legacy: {f.name} is CUDA {major}; Impulse (L) is built with CUDA 12.x")
+
+
+def linux(build: Path, cuda: Path, out: Path, require_fx: bool = False, legacy: bool = False) -> None:
     exe = build / "bin" / "impulse-server"
     shutil.copy2(exe, out / "impulse-server.bin")
     bundle_linux(exe, cuda, out)
     for f in fx_files(build, "linux", require_fx):   # beside impulse-server.bin: it execs impulse-fx from its own folder
         shutil.copy2(f, out / f.name)
         bundle_linux(f, cuda, out)
-    (out / "impulse-server").write_text(WRAPPER)
+    (out / "impulse-server").write_text(LEGACY_WRAPPER if legacy else WRAPPER)
     (out / "impulse-server").chmod(0o755)
 
 
-def windows(build: Path, cuda: Path, out: Path, require_fx: bool = False) -> None:
+def windows(build: Path, cuda: Path, out: Path, require_fx: bool = False, legacy: bool = False) -> None:
+    # --legacy changes nothing here: Windows looks beside the .exe first, so the CUDA 12 DLLs copied below are the ones
+    # it loads (main checks them with no_cuda13)
     shutil.copy2(build / "bin" / "impulse-server.exe", out / "impulse-server.exe")
     for f in fx_files(build, "windows", require_fx):
         shutil.copy2(f, out / f.name)
@@ -92,12 +113,19 @@ def main(argv=None) -> int:
     ap.add_argument("--platform", choices=["linux", "windows"], required=True)
     ap.add_argument("--build", type=Path, required=True)
     ap.add_argument("--cuda", type=Path, required=True)
-    ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--out", type=Path, help="the folder to write (with --legacy, default impulse-legacy)")
     ap.add_argument("--require-fx", action="store_true", help="fail unless the build has the Flash-Next engine")
+    ap.add_argument("--legacy", action="store_true", help="Impulse (L): the CUDA 12 build for Maxwell to Volta")
     a = ap.parse_args(argv)
+    if a.out is None:
+        if not a.legacy:
+            ap.error("--out is required")
+        a.out = Path("impulse-legacy")
     shutil.rmtree(a.out, ignore_errors=True)
     a.out.mkdir(parents=True)
-    (linux if a.platform == "linux" else windows)(a.build, a.cuda, a.out, a.require_fx)
+    (linux if a.platform == "linux" else windows)(a.build, a.cuda, a.out, a.require_fx, a.legacy)
+    if a.legacy:
+        no_cuda13(a.out)
     shutil.copy2(ROOT / "impulse" / "THIRD_PARTY_NOTICES.md", a.out)
     for f in sorted(a.out.iterdir()):
         print(f"[impulse] {f.name}  {f.stat().st_size / 2**20:.1f} MB")
