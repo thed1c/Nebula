@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.6.3
 
 **LFM2.5 8B in the model list.** Liquid AI's LFM2.5-8B-A1B, the smallest and quickest model on offer, is now in
 first run and Deploy your own: Liquid AI's own Q6_K file (7.0 GB, pinned and checked against its hash), for a 6 GB
