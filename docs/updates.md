@@ -36,8 +36,11 @@ On the System page, **Updates** has the choice and **Look now**.
 - **The button.** While the releases are private it is **Get update**: it opens the release page. It becomes
   **Update now** only for a Nebula the one-click installer put in place, and only when the file downloads without
   signing in. Then Nebula downloads it to a temporary folder, checks its sha256 (a mismatch is refused), waits until no
-  reply is in flight, and runs the installer quietly as you (Linux: the `.run` with `--quiet`; Windows: `Setup.exe /S`,
-  per user, no administrator). Nebula closes and opens again. A Nebula run from a checkout or a pip install is only
+  reply is in flight, and runs the installer as you (Linux: the `.run` with `--quiet`; Windows: `Setup.exe /UPDATE`,
+  per user, no administrator: its window in front of the others, no pages to click, closing by itself; Nebulas up to
+  0.1.6.2 pass `/S`, silent). Nebula closes and opens again. Setup keeps Python and Nebula's packages when Python's
+  version did not change (pip fetches only what moved), and the Safe sandbox keeps its Impulse image when Impulse did not
+  change. A Nebula run from a checkout or a pip install is only
   told.
 - **Small updates** (the owner's word, 2026-10-27: "small updates", "keep the downloads as small as possible"). When
   Impulse and everything else beside Nebula stayed the same, the feed's file for a platform also carries `app`:
@@ -46,7 +49,8 @@ On the System page, **Updates** has the choice and **Look now**.
   version, the extras); an install whose installer is one of the bases gets the small update, any other the whole
   installer. The page says which, and its size. The small update is checked the same way (sha256, after the signed
   feed), waits for the replies in flight, then Nebula steps out, the installer's own Python puts the new code in
-  (`pip`, which keeps every package already at its version), and Nebula opens again. Python, Impulse and the network's node programs are
+  (`pip`, which keeps every package already at its version), and Nebula opens again. On Windows a small window says
+  "Updating Nebula EH" meanwhile, in front of the others. Python, Impulse and the network's node programs are
   not touched; a release that changes them ships no `app`.
 - **What Nebula needs beside itself** follows its pins too: running `python -m nebula.prereqs` again replaces the
   Qdrant Nebula installed when its pinned version moved, and fetches Halo's model again when its file is not the
@@ -70,7 +74,11 @@ On the System page, **Updates** has the choice and **Look now**.
        --app linux-x86_64=dist/nebula-eh-0.1.4.1-app-linux-x86_64.tar.gz=https://github.com/thed1c/Nebula/releases/download/v0.1.4.1/nebula-eh-0.1.4.1-app-linux-x86_64.tar.gz=0.1.4 \
        --app windows-x86_64-u2=dist/nebula-eh-0.1.4.1-app-windows-x86_64.tar.gz=https://github.com/thed1c/Nebula/releases/download/v0.1.4.1/nebula-eh-0.1.4.1-app-windows-x86_64.tar.gz=0.1.4
 
-   (attach those files to the release too).
+   (attach those files to the release too). Windows' bases are only installers from 0.1.6.1 on (the versions that read
+   `windows-x86_64-u2`). Every `--file` platform needs its `--app`, or `--full-only <platform>` when its Impulse, Python
+   or node programs changed since the bases: the signer refuses a feed that leaves one out without saying so (until
+   0.1.6.2 the Windows small update was built and attached but never put in the feed, so every Windows update was the
+   whole installer).
 
    Windows files go under `windows-x86_64-u2`, read by Windows Nebulas from 0.1.6.1 on. Never publish `windows-x86_64`:
    Windows 0.1.5 and 0.1.6 read that key, and their update helper dies before the update runs (Nebula would close and not

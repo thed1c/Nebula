@@ -8,7 +8,9 @@
     python3 greenfield/sign_feed.py --version 0.1.3 --notes "What changed, in plain words" \\
             --file linux-x86_64=dist/nebula-eh-0.1.3-linux-x86_64.run=https://github.com/thed1c/Nebula/releases/download/v0.1.3/nebula-eh-0.1.3-linux-x86_64.run \\
             --file windows-x86_64-u2=dist/Nebula-EH-Setup-0.1.3.exe=https://github.com/.../Nebula-EH-Setup-0.1.3.exe \\
-            [--app linux-x86_64=dist/nebula-eh-0.1.4.1-app-linux-x86_64.tar.gz=https://.../nebula-eh-0.1.4.1-app-linux-x86_64.tar.gz=0.1.4] \\
+            --app linux-x86_64=dist/nebula-eh-0.1.4.1-app-linux-x86_64.tar.gz=https://.../nebula-eh-0.1.4.1-app-linux-x86_64.tar.gz=0.1.4 \\
+            --app windows-x86_64-u2=dist/nebula-eh-0.1.4.1-app-windows-x86_64.tar.gz=https://.../nebula-eh-0.1.4.1-app-windows-x86_64.tar.gz=0.1.6.1 \\
+            [--full-only PLATFORM]   (a platform without a small update is refused unless named here) \\
             --out feed/
         latest.json (each file's sha256 read from the file itself) and latest.json.sig beside it, ready to commit to the
         feed repository.
@@ -69,7 +71,7 @@ def sha256(p: Path) -> str:
     return h.hexdigest()
 
 
-def build(version: str, notes: str, files: list[str], page: str | None, apps: list[str] = ()) -> bytes:
+def build(version: str, notes: str, files: list[str], page: str | None, apps: list[str] = (), full_only: list[str] = None) -> bytes:
     updates.version_tuple(version)
     out = {}
     for spec in files:
@@ -89,6 +91,17 @@ def build(version: str, notes: str, files: list[str], page: str | None, apps: li
         if not bases:
             raise SystemExit(f"{plat}: a small update names the installers it fits on")
         out[plat]["app"] = {"url": url, "sha256": sha256(Path(local)), "bytes": Path(local).stat().st_size, "bases": bases}
+    # every platform's installer comes with its small update, or the release says it has none (the owner's word,
+    # 2026-11-02: Windows' small update was built and attached from 0.1.6 on, but never in the feed, so every Windows
+    # update was the whole installer): a platform without one is refused unless --full-only names it
+    if full_only is not None:
+        unknown = set(full_only) - set(out)
+        if unknown:
+            raise SystemExit(f"--full-only {', '.join(sorted(unknown))}: no such platform among the --file ones")
+        missing = [plat for plat in out if "app" not in out[plat] and plat not in full_only]
+        if missing:
+            raise SystemExit(f"{', '.join(missing)}: no small update (--app). Add it, or say --full-only {missing[0]} when "
+                             "Impulse, Python or the node programs changed for it since every installer out there")
     feed = {"version": version.lstrip("v"), "notes": notes, "published": datetime.date.today().isoformat(), "files": out,
             "release_page": page or f"https://github.com/thed1c/Nebula/releases/tag/v{version.lstrip('v')}"}
     return (json.dumps(feed, indent=1) + "\n").encode()
@@ -105,6 +118,9 @@ def main(argv=None) -> int:
     ap.add_argument("--app", action="append", default=[],
                     help="a small update: PLATFORM=LOCAL_FILE=URL=BASES (the installers' versions it fits on, comma separated; "
                          "only when Impulse and the rest beside Nebula did not change since those)")
+    ap.add_argument("--full-only", action="append", default=[],
+                    help="PLATFORM: this release has no small update for it (its Impulse, Python or node programs changed); "
+                         "every --file platform needs an --app or this")
     ap.add_argument("--release-page")
     ap.add_argument("--out", type=Path, default=Path("."))
     a = ap.parse_args(argv)
@@ -119,7 +135,7 @@ def main(argv=None) -> int:
         ap.error("--version is needed to sign a feed")
     if updates.public_of(seed).hex() != updates.PUBLIC_KEY:
         raise SystemExit("this key is not the one nebula/updates.py trusts (PUBLIC_KEY): refused")
-    body = build(a.version, a.notes, a.file, a.release_page, a.app)
+    body = build(a.version, a.notes, a.file, a.release_page, a.app, a.full_only)
     sig = sign(seed, body)
     assert updates.verify(updates.public_of(seed), body, sig)
     a.out.mkdir(parents=True, exist_ok=True)

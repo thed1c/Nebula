@@ -8,6 +8,25 @@ card and 16 GB of RAM, and offered to friends. Uncensored picks gaston-parravici
 model (Q6_K, pinned and hash-checked). Impulse runs it on the same engine as LFM2.5 24B. On a computer too small for
 Gemma 4 26B and LFM2.5 24B it is the model Nebula recommends. Text only.
 
+**Windows: updates are small.** Setup used to delete Nebula's whole Python folder every time and download Python and
+every package again (the CUDA libraries and torch among them), so a small fix was a full reinstall. Setup now keeps
+Python and Nebula's packages when Python's version did not change, and pip fetches only the packages whose version
+moved. If they do not install over the Python already there, Setup starts once more with a fresh Python. The Safe
+sandbox keeps its Impulse image when Impulse did not change, instead of downloading Impulse for Linux (about 500 MB) and
+building the image again, and Setup no longer asks the sandbox question again once a sandbox is in place. The release
+feed now carries Windows' small update (Nebula's own code alone) as it does Linux's, and the feed signer refuses a release
+that leaves a platform's small update out without saying so.
+
+**Windows: the update shows in front.** The Update button's Setup used to run hidden: Nebula closed and nothing
+showed until it opened again. Setup now opens in front of the other windows with no pages to click, shows what it is
+doing, and closes by itself when it is done; then Nebula opens again. A small update shows a small "Updating Nebula EH"
+window of its own until Nebula opens again. An update never asks the Safe sandbox question: the choice made at the
+install stands.
+
+**Model pickers work again.** Picking a model in the Assistant's picker, a Star's route or Halo's own picker failed
+with "no tier named '…'": the picker's value carried a character the page could not keep. It carries the tier and the
+model as plain text now.
+
 ## 0.1.6.2
 
 **Windows: Setup closes Nebula first.** Setup over a Nebula that was still open left part of its Python in place (the

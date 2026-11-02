@@ -102,6 +102,51 @@ class WindowsSetupClosesNebulaTest(unittest.TestCase):
 
     def test_the_finish_page_opens_nebula_as_the_user(self):
         nsi = (self.WIN / "installer.nsi").read_text()
-        fn = nsi[nsi.index("Function OpenNebula"):nsi.index("FunctionEnd")]
+        start = nsi.index("Function OpenNebula")
+        fn = nsi[start:nsi.index("FunctionEnd", start)]
         self.assertIn("explorer.exe", fn)
         self.assertNotIn("pythonw.exe", fn)
+
+
+class WindowsUpdatesAreSmallTest(unittest.TestCase):
+    """Every Setup deleted Nebula's whole Python and fetched it and every package again, so a fix of a few lines was a full
+    reinstall; and the Update button's Setup ran hidden (the owner's word, 2026-11-02)."""
+    WIN = ROOT / "greenfield" / "windows"
+
+    def test_setup_no_longer_deletes_python(self):
+        nsi = (self.WIN / "installer.nsi").read_text()
+        self.assertNotIn('RMDir /r "$INSTDIR\\python"', nsi)
+        self.assertIn('RMDir /r "$INSTDIR\\impulse"', nsi)               # what the payload carries is put back from it
+
+    def test_install_keeps_python_of_the_same_version_and_starts_over_once_when_pip_fails(self):
+        ps = (self.WIN / "install.ps1").read_text()
+        self.assertIn("platform.python_version()", ps)
+        self.assertIn("$have -eq $wantPy", ps)
+        self.assertEqual(ps.count("$code = InstallPackages"), 2)              # once, and once more with a fresh Python
+        import re
+        name = f"cpython-{P.PY}+{P.PBS}-x86_64-pc-windows-msvc-install_only.tar.gz"
+        pat = re.search(r"-match '([^']+)'", ps).group(1)
+        self.assertEqual(re.search(pat, name).group(1), P.PY)                # the version read from the pinned download
+
+    def test_the_update_runs_setup_in_front_without_pages(self):
+        nsi = (self.WIN / "installer.nsi").read_text()
+        self.assertIn('${GetOptions} $0 "/UPDATE" $1', nsi)
+        self.assertEqual(nsi.count("!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipOnUpdate"), 2)   # welcome and finish
+        self.assertIn("SetAutoClose true", nsi)
+        fn = nsi[nsi.index("Function SetupInFront"):]
+        fn = fn[:fn.index("FunctionEnd")]
+        self.assertIn("SetWindowPos", fn)
+        self.assertIn("BringToFront", fn)
+        self.assertNotRegex(fn, r"StrCmp [^\n]* \+\d")                        # no relative jump over plugin calls
+
+    def test_an_update_never_asks_the_sandbox_question(self):
+        nsi = (self.WIN / "installer.nsi").read_text()
+        keep = nsi.index("sandbox.ps1\" -Dest \"$INSTDIR\" -Conf \"$APPDATA\\nebula\" -Keep")
+        ask = nsi.index("Run your models in a Safe sandbox?")
+        between = nsi[keep:ask]
+        self.assertIn('StrCmp $1 "4" 0 sandbox_done', between)
+        self.assertIn('StrCmp $Update "1" sandbox_done', between)
+        self.assertIn("IfSilent sandbox_done", between)
+        ps = (self.WIN / "sandbox.ps1").read_text()
+        self.assertIn("exit 4", ps)
+        self.assertIn("impulse_sha256", ps)                                  # the same Impulse is not fetched again

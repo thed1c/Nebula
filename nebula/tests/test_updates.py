@@ -488,6 +488,66 @@ class SignFeedAppTest(unittest.TestCase):
             sign_feed.build("0.1.4.1", "", [], None, ["linux-x86_64=%s=https://x.invalid/a.tar.gz=0.1.4" % (tmp / "a.tar.gz")])
 
 
+class FeedCarriesEverySmallUpdateTest(unittest.TestCase):
+    """Windows' small update was built and attached from 0.1.6 on but never put in the feed (2026-11-02)."""
+    def setUp(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "greenfield"))
+        import sign_feed
+        self.sf = sign_feed
+        self.tmp = Path(tempfile.mkdtemp())
+        for f in ("n.run", "s.exe", "a.tar.gz", "w.tar.gz"):
+            (self.tmp / f).write_bytes(f.encode())
+        self.files = ["linux-x86_64=%s=https://x.invalid/n.run" % (self.tmp / "n.run"),
+                      "windows-x86_64-u2=%s=https://x.invalid/s.exe" % (self.tmp / "s.exe")]
+        self.linux_app = "linux-x86_64=%s=https://x.invalid/a.tar.gz=0.1.6" % (self.tmp / "a.tar.gz")
+        self.win_app = "windows-x86_64-u2=%s=https://x.invalid/w.tar.gz=0.1.6.1" % (self.tmp / "w.tar.gz")
+
+    def test_a_platform_without_its_small_update_is_refused(self):
+        with self.assertRaises(SystemExit) as e:
+            self.sf.build("0.1.6.3", "", self.files, None, [self.linux_app], [])
+        self.assertIn("windows-x86_64-u2", str(e.exception))
+
+    def test_every_small_update_or_a_platform_named_full_only_goes_through(self):
+        body = json.loads(self.sf.build("0.1.6.3", "", self.files, None, [self.linux_app, self.win_app], []))
+        self.assertEqual(body["files"]["windows-x86_64-u2"]["app"]["bases"], ["0.1.6.1"])
+        body = json.loads(self.sf.build("0.1.6.3", "", self.files, None, [self.linux_app], ["windows-x86_64-u2"]))
+        self.assertNotIn("app", body["files"]["windows-x86_64-u2"])
+        with self.assertRaises(SystemExit):
+            self.sf.build("0.1.6.3", "", self.files, None, [self.linux_app, self.win_app], ["macos"])
+
+    def test_the_command_line_checks_it(self):
+        key = self.tmp / "key"
+        key.write_text(SEED.hex())
+        key.chmod(0o600)
+        with mock.patch.object(self.sf.updates, "PUBLIC_KEY", PUB), self.assertRaises(SystemExit) as e:
+            self.sf.main(["--key", str(key), "--version", "0.1.6.3", "--out", str(self.tmp / "feed"),
+                          *sum((["--file", f] for f in self.files), []), "--app", self.linux_app])
+        self.assertIn("no small update", str(e.exception))
+
+
+class WindowsUpdateInFrontTest(unittest.TestCase):
+    def test_the_helper_runs_setup_with_its_window_in_front(self):
+        from nebula import updates
+        self.assertIn('"%~1" /UPDATE', updates.WINDOWS_HELPER)
+        self.assertNotIn(" /S", updates.WINDOWS_HELPER)
+
+    def test_nebula_lets_the_update_come_forward_before_it_steps_out(self):
+        from nebula import updates
+        calls = []
+        fake = SimpleNamespace(windll=SimpleNamespace(user32=SimpleNamespace(AllowSetForegroundWindow=lambda v: calls.append(v.value))),
+                               c_uint32=lambda v: SimpleNamespace(value=v))
+        with mock.patch.object(updates.os, "name", "nt"), mock.patch.dict("sys.modules", {"ctypes": fake}):
+            updates._let_the_update_come_forward()
+        self.assertEqual(calls, [0xFFFFFFFF])                       # ASFW_ANY
+
+    def test_the_small_update_shows_a_window_on_windows(self):
+        from nebula import updates
+        self.assertIn("tkinter", updates.APPLY_APP)
+        self.assertIn('"-topmost", True', updates.APPLY_APP)
+        compile(updates.APPLY_APP, "apply.py", "exec")
+
+
 class WindowsHelperFlagsTest(unittest.TestCase):
     def test_the_helper_is_not_started_detached(self):
         # a DETACHED_PROCESS cmd.exe died waiting for Nebula to close: the update never ran and Nebula did not reopen

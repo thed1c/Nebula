@@ -31,8 +31,9 @@ Two ways to the new version:
   notify   the page's button opens the release page (while the releases are private, the only way)
   install  only for a Nebula the one-click installer put in place, and only when its file downloads without signing in:
            the file is fetched to a temporary folder, checked against its sha256, and its installer run quietly as this
-           user (Linux: the .run with --quiet; Windows: Setup.exe /S, per-user) once no turn is in flight; then Nebula
-           opens again. Never root, never an administrator.
+           user (Linux: the .run with --quiet; Windows: Setup.exe /UPDATE, per-user, its window in front of the others
+           and closing by itself) once no turn is in flight; then Nebula opens again. A small update shows a small
+           window of its own on Windows while it puts the new code in place. Never root, never an administrator.
 """
 from __future__ import annotations
 
@@ -425,6 +426,7 @@ class Updates:
                 if self.closing.wait(5):
                     return
             self.installing = "installing"
+            _let_the_update_come_forward()
             if app is not None:
                 run_app_update(dest, self.cfg, install_dir())
             else:
@@ -464,10 +466,11 @@ exec "$3/nebula-open"
 """
 
 WINDOWS_HELPER = """@echo off
-rem Nebula's update (nebula/updates.py): waits for Nebula to close, runs Setup quietly (per user), opens Nebula again.
+rem Nebula's update (nebula/updates.py): waits for Nebula to close, runs Setup (per user, its window in front, no pages to
+rem click, closing by itself: /UPDATE), opens Nebula again.
 :wait
 tasklist /FI "PID eq %~2" 2>nul | find "%~2" >nul && (timeout /t 1 /nobreak >nul & goto wait)
-"%~1" /S
+"%~1" /UPDATE
 cd /d "%~4"
 start "" "%~3\\python\\pythonw.exe" -m nebula.app --config "%~5"
 """
@@ -477,6 +480,20 @@ start "" "%~3\\python\\pythonw.exe" -m nebula.app --config "%~5"
 # cmd.exe died in its wait for Nebula to close (tested on a Windows 11 machine, 2026-10-31), so Nebula closed for the
 # update and nothing put it in place or reopened it. Started this way, the helper outlives Nebula and does both.
 HELPER_FLAGS = 0x00000200 | 0x08000000
+
+
+def _let_the_update_come_forward() -> None:
+    """Windows: Nebula's window is in front when its Update is pressed; the update's own window (Setup, or the small
+    update's) comes up after Nebula has closed, from a helper with no window of its own, and Windows keeps such a window
+    behind the others (the owner's word, 2026-11-02: "hidden behind everything"). Nebula lets any process take the front
+    before it steps out (AllowSetForegroundWindow(ASFW_ANY)); the update's windows also put themselves on top once."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.user32.AllowSetForegroundWindow(ctypes.c_uint32(0xFFFFFFFF))
+    except Exception:  # noqa: BLE001 - only where the window shows; the update runs the same
+        LOG.debug("updates: AllowSetForegroundWindow failed", exc_info=True)
 
 
 def run_installer(path: Path, cfg, home: Path | None) -> None:
@@ -502,27 +519,99 @@ def run_installer(path: Path, cfg, home: Path | None) -> None:
 # A small update: Nebula's own code (its wheel) and the package versions it was tested with, put in place by the
 # installer's own Python once Nebula has stepped out; then Nebula opens again. pip keeps every package already at its
 # version, so only what changed is fetched. Nothing else (Python, Impulse, PAIR) is touched.
-APPLY_APP = """import json, pathlib, subprocess, sys, tarfile, tempfile
+APPLY_APP = """import json, os, pathlib, subprocess, sys, tarfile, tempfile, threading
 arc, home = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
-info_p = home / "app" / "install.json"
-info = json.loads(info_p.read_text(encoding="utf-8-sig"))
-d = pathlib.Path(tempfile.mkdtemp(dir=arc.parent))
-with tarfile.open(arc) as t:
-    t.extractall(d, filter="data")
-whl = next(d.glob("nebula_eh-*.whl"))
-cmd = [sys.executable, "-m", "pip", "install", "-q", "--disable-pip-version-check", "--no-warn-script-location", "--upgrade",
-       "--constraint", str(d / "constraints.txt")]
-if info.get("extra_index"):
-    cmd += ["--extra-index-url", info["extra_index"]]
-cmd.append(f"{whl}[{info['extras']}]" if info.get("extras") else str(whl))
-r = subprocess.run(cmd)
-if r.returncode != 0:
-    print("the small update did not install: Nebula opens as it was")
-    sys.exit(1)
-info["version"] = whl.name.split("-")[1]
-info_p.write_text(json.dumps(info))
-(home / "app" / "VERSION").write_text(info["version"] + "\\n")
-print("Nebula", info["version"], "is in place")
+NO_WINDOW = 0x08000000 if os.name == "nt" else 0             # pip's own console stays hidden
+
+
+def apply(say):
+    info_p = home / "app" / "install.json"
+    info = json.loads(info_p.read_text(encoding="utf-8-sig"))
+    d = pathlib.Path(tempfile.mkdtemp(dir=arc.parent))
+    with tarfile.open(arc) as t:
+        t.extractall(d, filter="data")
+    whl = next(d.glob("nebula_eh-*.whl"))
+    version = whl.name.split("-")[1]
+    say("Updating Nebula EH to " + version + "...")
+    cmd = [sys.executable, "-m", "pip", "install", "-q", "--disable-pip-version-check", "--no-warn-script-location", "--upgrade",
+           "--constraint", str(d / "constraints.txt")]
+    if info.get("extra_index"):
+        cmd += ["--extra-index-url", info["extra_index"]]
+    cmd.append(f"{whl}[{info['extras']}]" if info.get("extras") else str(whl))
+    r = subprocess.run(cmd, creationflags=NO_WINDOW)
+    if r.returncode != 0:
+        print("the small update did not install: Nebula opens as it was")
+        say("The update did not install: Nebula EH opens as it was.")
+        return 1
+    info["version"] = version
+    info_p.write_text(json.dumps(info))
+    (home / "app" / "VERSION").write_text(info["version"] + "\\n")
+    print("Nebula", info["version"], "is in place")
+    say("Nebula EH " + version + " is in place: it opens again.")
+    return 0
+
+
+def window():
+    # Windows: Nebula has closed, so a small window says what is happening, in front of the others, until it is done
+    # (the owner's word, 2026-11-02: an update must not be invisible); no window where tkinter is missing
+    if os.name != "nt":
+        return None
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+        root = tk.Tk()
+    except Exception:
+        return None
+    root.title("Nebula EH")
+    try:
+        root.iconbitmap(str(home / "app" / "nebula.ico"))
+    except Exception:
+        pass
+    root.resizable(False, False)
+    label = ttk.Label(root, text="Updating Nebula EH...", padding=(18, 16, 18, 8), width=48)
+    label.pack()
+    bar = ttk.Progressbar(root, mode="indeterminate", length=340)
+    bar.pack(padx=18, pady=(0, 18))
+    bar.start(12)
+    root.update_idletasks()
+    w, h = root.winfo_width(), root.winfo_height()
+    root.geometry(f"+{(root.winfo_screenwidth() - w) // 2}+{(root.winfo_screenheight() - h) // 3}")
+    root.attributes("-topmost", True)
+    root.lift()
+    root.focus_force()
+    return root, label, bar
+
+
+ui = window()
+if ui is None:
+    sys.exit(apply(lambda m: None))
+root, label, bar = ui
+said, done = [], []
+
+
+def work():
+    try:
+        done.append(apply(said.append))
+    except Exception as e:
+        print("the small update did not install:", e)
+        said.append("The update did not install: Nebula EH opens as it was.")
+        done.append(1)
+
+
+def follow():
+    if said:
+        label.config(text=said[-1])
+    if done:
+        bar.stop()
+        root.after(1500 if done[0] == 0 else 5000, root.destroy)
+        return
+    root.after(200, follow)
+
+
+threading.Thread(target=work, daemon=True).start()
+root.after(200, follow)
+root.mainloop()
+sys.exit(done[0] if done else 1)
 """
 
 LINUX_APP_HELPER = """#!/bin/sh

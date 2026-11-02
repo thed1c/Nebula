@@ -1,7 +1,11 @@
 # Nebula EH for Windows: the Safe sandbox step. Engines then run in containers (Podman in WSL2), as on Linux; without it
 # they run as plain programs, with a warning (nebula/wslbox.py says which). Setup runs it after install.ps1:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File sandbox.ps1 -Dest <install folder> -Conf <settings folder>
-#       [-Decline] [-Resume] [-ImpulseTar <impulse-linux.tar.gz>]
+#       [-Decline] [-Resume] [-Keep] [-ImpulseTar <impulse-linux.tar.gz>]
+# -Keep (Setup over an install, and every update): a sandbox in place is brought up to date, one waiting for its restart
+#    is left to it (exit 0); with none in place (never set up, declined, failed) nothing is touched and it exits 4, so
+#    Setup asks only then (and an update never asks).
+# Impulse's Linux build is fetched again only when it changed (its sha256, kept in sandbox.json) or its image is gone.
 # 1. WSL2: when it is not on this PC, `wsl --install --no-distribution --web-download` (from GitHub, so no Microsoft
 #    Store is needed: Windows 10 LTSC) asks for an administrator once (UAC); if
 #    Windows must restart, this step resumes by itself at the next sign-in (RunOnce) and Nebula runs unsandboxed until then.
@@ -12,7 +16,7 @@
 # Its result goes to <Conf>\sandbox.json. A failure is reported and leaves Nebula working without the sandbox.
 # Undo: sandbox-undo.ps1 (the distro, its folder, sandbox.json; WSL itself stays).
 param([Parameter(Mandatory = $true)][string]$Dest, [Parameter(Mandatory = $true)][string]$Conf,
-      [switch]$Decline, [switch]$Resume, [string]$ImpulseTar = "")
+      [switch]$Decline, [switch]$Resume, [switch]$Keep, [string]$ImpulseTar = "")
 $ProgressPreference = "SilentlyContinue"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 function Say($m) { Write-Output $m }
@@ -25,6 +29,13 @@ function Done($state, $why, $extra) {
   [IO.File]::WriteAllText($stateFile, ($o | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding $false))
   if ($state -eq "ready") { Say "Safe sandbox: ready." } elseif ($why) { Say ("Safe sandbox: " + $why + ". Nebula runs engines without it.") }
   exit 0
+}
+$prev = $null
+try { $prev = Get-Content -Raw $stateFile -ErrorAction Stop | ConvertFrom-Json } catch { }
+if ($Keep) {
+  if ($prev -and $prev.state -eq "reboot") { Say "Safe sandbox: it finishes by itself after Windows restarts."; exit 0 }
+  if (-not $prev -or $prev.state -ne "ready") { exit 4 }
+  Say "Safe sandbox: in place; bringing it up to date..."
 }
 if ($Decline) { Done "declined" "you chose to run engines without a sandbox" $null }
 
@@ -70,8 +81,17 @@ if (-not $have) {
 
 # 3. Inside it
 $tarIn = ""
-if ($ImpulseTar) { $tarIn = $ImpulseTar }
+$impSha = ""
+$keepImage = ""
+if ($ImpulseTar) { $tarIn = $ImpulseTar; $impSha = (Get-FileHash $ImpulseTar -Algorithm SHA256).Hash.ToLower() }
+elseif ($online -and $online.sandbox_impulse -and $prev -and $prev.state -eq "ready" -and $prev.impulse_sha256 -eq $online.sandbox_impulse.sha256 -and
+        $prev.images -and $prev.images.impulse -and (Wsl @("-d", $distro, "--exec", "nebula-podman", "image", "exists", $prev.images.impulse)).code -eq 0) {
+  # the same Impulse as the image already built (most updates): not fetched (hundreds of MB) nor built again
+  $keepImage = $prev.images.impulse; $impSha = $prev.impulse_sha256
+  Say "Impulse for the sandbox has not changed: its image ($keepImage) is kept."
+}
 elseif ($online -and $online.sandbox_impulse) {
+  $impSha = $online.sandbox_impulse.sha256
   $tarIn = Join-Path $home2 "impulse-linux.tar.gz"
   Say "Fetching Impulse's Linux build for the sandbox..."
   try { Invoke-WebRequest -UseBasicParsing -Uri $online.sandbox_impulse.url -OutFile $tarIn } catch { Done "failed" "Impulse's Linux build could not be fetched" $null }
@@ -95,4 +115,7 @@ $info = ("$res".Substring(7)) | ConvertFrom-Json
 $chk = Wsl @("-d", $distro, "--exec", "nebula-podman", "info", "--format", "{{.Version.Version}}")
 if ($chk.code -ne 0) { Done "failed" ("Podman does not answer as the engines' user: " + $chk.out.Trim()) $null }
 $images = @{}; foreach ($p in $info.images.PSObject.Properties) { $images[$p.Name] = $p.Value }
-Done "ready" "" @{ distro = $distro; podman = $info.podman; gpu = $info.gpu; gpu_check = $info.gpu_check; images = $images }
+if ($keepImage) { $images["impulse"] = $keepImage }
+$extra = @{ distro = $distro; podman = $info.podman; gpu = $info.gpu; gpu_check = $info.gpu_check; images = $images }
+if ($impSha -and $images["impulse"]) { $extra["impulse_sha256"] = $impSha }
+Done "ready" "" $extra
