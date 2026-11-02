@@ -55,13 +55,16 @@ def fits(m: dict, have: dict) -> list[str]:
     return out
 
 
-def _lacks(m: dict, have: dict, impulse_runs: bool) -> list[str]:
+def _lacks(m: dict, have: dict, impulse_runs: bool, legacy: bool = False) -> list[str]:
     """fits(), for this machine's engine: without an NVIDIA card a Flash-Next model has none (Impulse only), and a GGUF
-    runs on Impulse portable, where a smaller card is no stop (what does not fit on it stays in RAM)."""
+    runs on Impulse portable, where a smaller card is no stop (what does not fit on it stays in RAM). `legacy`: an
+    older NVIDIA card runs GGUFs on Impulse (L) (not Flash-Next)."""
     if impulse_runs:
         return fits(m, have)
     if m.get("ask_repo") or "flashnext" in m["id"]:
         return ["an NVIDIA graphics card (RTX 30, 40 or 50) on Linux: Flash-Next runs on Impulse only"]
+    if legacy:
+        return fits(m, have)
     return [x for x in fits(m, have) if not x.startswith("a graphics card")]
 
 
@@ -79,16 +82,20 @@ def default_variant() -> str:
     return load().get("default_variant") or "standard"
 
 
-def offer(models_dir: str | None = None, friends: bool = False, variant: str | None = None) -> dict:
+def offer(models_dir: str | None = None, friends: bool = False, variant: str | None = None, base_dir: str | None = None) -> dict:
     """The catalog for this machine: each model with what it lacks, and the one to recommend (the first of the
-    catalog's `recommend` order that fits). On a friend's path, only the models offered to friends."""
+    catalog's `recommend` order that fits). On a friend's path, only the models offered to friends. `legacy`: Impulse (L)
+    runs here (older NVIDIA cards), or can once it is downloaded, with the sentence that says so."""
+    from nebula import engines as E
     cat, have = load(), machine(models_dir)
     variant = variant or default_variant()
     runs, why = impulse_runs_here()
-    rows = [dict(m2, lacks=_lacks(m2, have, runs)) for m2 in (variant_of(m, variant) for m in cat["models"]) if m2.get("friends") or not friends]
+    prog, lwhy = (None, None) if runs else E.legacy_here(base_dir)
+    rows = [dict(m2, lacks=_lacks(m2, have, runs, bool(prog))) for m2 in (variant_of(m, variant) for m in cat["models"]) if m2.get("friends") or not friends]
     ok = {r["id"] for r in rows if not r["lacks"]}
     rec = next((i for i in cat.get("recommend") or [] if i in ok), next(iter(ok), None))
-    return {"engine": cat.get("engine"), "machine": have, "models": rows, "recommended": rec, "impulse": runs, "impulse_why": why}
+    return {"engine": cat.get("engine"), "machine": have, "models": rows, "recommended": rec, "impulse": runs, "impulse_why": why,
+            **({"legacy": {"here": bool(prog) and prog != E.LEGACY, "download": prog == E.LEGACY, "why": lwhy}} if prog or lwhy else {})}
 
 
 def get(mid: str, variant: str | None = None) -> dict | None:
@@ -96,13 +103,15 @@ def get(mid: str, variant: str | None = None) -> dict | None:
     return variant_of(m, variant or default_variant()) if m is not None else None
 
 
-def layout(m: dict, have: list[dict] | None = None) -> dict | None:
+def layout(m: dict, have: list[dict] | None = None, legacy: bool = False) -> dict | None:
     """A model's first multi-card layout this machine can take ({"id", "card", "options", "about"}), or None: one card.
     A layout names how many cards it wants and their free memory together (`cards`, `min_total_mb`); the cards with the
-    most free memory among the ones Impulse runs on are taken, split in proportion to it (tensor_split)."""
+    most free memory among the ones Impulse runs on are taken, split in proportion to it (tensor_split). `legacy`: on
+    Impulse (L), its older cards only (one engine's cards are of one kind)."""
     from nebula import engines as E
     have = E.cards() if have is None else have
-    ok = [c for c in have if not c.get("compute_cap") or c["compute_cap"] in IMPULSE_CAPS]
+    ok = ([c for c in have if E.is_legacy_card(c)] if legacy else
+          [c for c in have if not c.get("compute_cap") or c["compute_cap"] in IMPULSE_CAPS])
     ok.sort(key=lambda c: (c.get("memory_mb") or 0) - (c.get("used_mb") or 0), reverse=True)
     for lay in m.get("layouts") or []:
         n = int(lay.get("cards") or 1)

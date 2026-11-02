@@ -105,14 +105,16 @@ def _catalog_options(server, friends: bool = False, variant: str | None = None, 
     that asks for its file (ask_repo) only where the setup has that step (Run a model, not the one-click first run)."""
     from nebula import catalog as C
     from nebula import yard
-    o = C.offer(yard.models_dir(server), friends, variant)
+    o = C.offer(yard.models_dir(server), friends, variant, base_dir=server.cfg.base_dir)
     rows = sorted((m for m in o["models"] if ask_repo or not m.get("ask_repo")),
                   key=lambda m: (m["id"] != o["recommended"], bool(m["lacks"])))
+    leg = o.get("legacy") or {}                         # older NVIDIA cards: Impulse (L), here or offered, or why not
+    ok, why = (o["impulse"] or bool(leg.get("here") or leg.get("download"))), (leg["why"] if leg else o["impulse_why"])
     return [{"value": m["id"], "label": m["name"], "about": m["about"], "maker": m.get("maker"),
              "size": "you choose the file and its size" if m.get("ask_repo") else
                      "on this computer: no download" if _cached_files(server, m) is not None else f"{m['download_gb']:.0f} GB download",
              "note": m.get("content"), "recommended": m["id"] == o["recommended"], "lacks": m["lacks"], "disabled": False,
-             "engine_ok": o["impulse"], "engine_why": o["impulse_why"]} for m in rows]
+             "engine_ok": ok, "engine_why": why} for m in rows]
 
 
 def _cached_files(server, m: dict) -> dict | None:
@@ -174,7 +176,7 @@ def _cached_deploy(server, job, a: dict) -> dict:
     pkg, binary, _why = _engine_for(server, {k: v for k, v in a.items() if k != "package"} if not a.get("advanced") else a)
     name = a.get("name") or _free_name(server, m["repo"].split("/")[-1].lower().replace("-gguf", "")[:24])
     opts = {"mmproj": True, "mmproj_file": m["mmproj"]} if m.get("mmproj") else {}
-    card = _cards_for(a)
+    card = _cards_for(a, server, binary)
     job.deploy({"name": name, "kind": pkg, **_portable_spec(server, job, pkg, binary, a), "model": m["path"], "context": int(a.get("context") or 8192),
                 "slots": 1, "options": opts, **({"card": card} if card else {}), **({"cwd": a["cwd"]} if a.get("cwd") else {})})
     return {"model": name, "test": job.test(name)}
@@ -197,6 +199,11 @@ def _engine_for(server, a: dict) -> tuple[str, str | None, str | None]:
     if runs:
         b = a.get("binary") or P.locate("impulse", server.cfg.base_dir)
         return "impulse", b, None if b else "Impulse isn't on this computer yet"
+    from nebula import engines as E
+    old, owhy = E.legacy_here(server.cfg.base_dir)          # older NVIDIA cards: Impulse (L), downloaded first if not here
+    if old:
+        return "impulse", a.get("binary") or old, owhy
+    why = owhy or why
     from nebula import halo_engine as HE, pieces
     port = HE.find_portable(server.cfg.base_dir)
     if port or pieces.pin("impulse-portable") is not None:
@@ -231,13 +238,17 @@ def _engine_line(server, pkg: str, binary) -> str:
     if _is_portable(server, binary):
         return ("Run it with Impulse portable, directly on this computer (not in a sandbox: a sandbox does not reach the "
                 "graphics card)")
+    from nebula import engines as E
+    if pkg == "impulse" and E.is_legacy_program(binary):
+        return "Run it on this computer with Impulse (L), the build for older NVIDIA cards"
     return f"Run it on this computer with {'Impulse 0.1.1' if pkg == 'impulse' else pkg}"
 
 
 def _portable_lines(server, binary) -> list:
-    """The download Impulse portable needs first, said plainly (nothing when it is here)."""
-    from nebula import pieces
-    return [pieces.say("impulse-portable")[0].upper() + pieces.say("impulse-portable")[1:]] if binary == PORTABLE else []
+    """The download Impulse portable or Impulse (L) needs first, said plainly (nothing when it is here)."""
+    from nebula import engines as E, pieces
+    piece = {PORTABLE: "impulse-portable", E.LEGACY: E.LEGACY}.get(binary) if isinstance(binary, str) else None
+    return [pieces.say(piece)[0].upper() + pieces.say(piece)[1:]] if piece else []
 
 
 def _vulkan_fit(server, size_mb: float | None, a: dict | None = None) -> list:
@@ -265,7 +276,17 @@ def _vulkan_fit(server, size_mb: float | None, a: dict | None = None) -> list:
 
 def _portable_spec(server, job, pkg: str, binary, a: dict | None = None) -> dict:
     """The deployment's program: Impulse portable downloaded now when it is not here (said first), and run directly on
-    this computer (a sandbox does not reach the graphics card); any other program as it is."""
+    this computer (a sandbox does not reach the graphics card); Impulse (L) downloaded now when it is not here (the
+    owner's apply is the click that asks for it); any other program as it is."""
+    from nebula import engines as E
+    if binary == E.LEGACY:
+        from nebula import pieces
+        job.say(pieces.say(E.LEGACY), "running")
+        binary = pieces.fetch(E.LEGACY, server.cfg.base_dir,
+                              lambda got, total: job.steps[-1].__setitem__("progress", [got, total]))
+        job.steps[-1]["state"] = "done"
+    if E.is_legacy_program(binary):
+        return {"binary": binary, "note": "Impulse (L): the build for older NVIDIA cards"}
     if not _is_portable(server, binary):
         return {"binary": binary}
     if binary == PORTABLE:
@@ -395,9 +416,11 @@ def _deploy_repo(server, job, a: dict, m: dict) -> dict:
     return {"model": name, "test": job.test(name)}
 
 
-def _cards_for(a: dict) -> str | None:
+def _cards_for(a: dict, server=None, binary=None) -> str | None:
     """The card(s) a guided setup gives its model: the ones the answers name ("cards": UUIDs or indexes), else this
-    machine's card with the most free memory. Without one, a sandbox would have no GPU, and an engine run here every card."""
+    machine's card with the most free memory. Without one, a sandbox would have no GPU, and an engine run here every card.
+    On Impulse (L) (`binary` its program, or E.LEGACY before it is downloaded), an older card; without `server` (a
+    Flash-Next pack: the main build only), never one."""
     if a.get("cards"):
         return ",".join(str(c) for c in a["cards"])
     from nebula import engines
@@ -405,7 +428,12 @@ def _cards_for(a: dict) -> str | None:
         have = engines.cards()
     except Exception:  # noqa: BLE001
         have = []
-    have = [c for c in have if not engines.card_too_old(c)]       # older than Impulse's build: the model stays in RAM
+    base = server.cfg.base_dir if server is not None else None
+    if engines.is_legacy_program(binary):
+        have = [c for c in have if engines.is_legacy_card(c)]
+    else:
+        have = [c for c in have if not engines.card_too_old(c, base)   # older than Impulse's build: the model stays in RAM
+                and not (server is None and engines.is_legacy_card(c))]
     if not have:
         return None
     best = max(have, key=lambda c: int(c.get("memory_mb", 0)) - int(c.get("used_mb", 0)))
@@ -423,7 +451,8 @@ def _deploy_lines(server, a: dict, m: dict) -> tuple[list, list]:
              _engine_line(server, pkg, binary) + (", reading pictures" if m.get("mmproj") else ""),
              "Send it a hello to check it answers"]
     from nebula import catalog as C
-    lay = C.layout(m) if pkg == "impulse" and not a.get("cards") else None
+    from nebula import engines as E
+    lay = C.layout(m, legacy=E.is_legacy_program(binary)) if pkg == "impulse" and not a.get("cards") else None
     if lay and "," in lay["card"]:
         lines.insert(2, f"Use {len(lay['card'].split(','))} cards together: {lay['about']}")
     warn = []
@@ -481,10 +510,11 @@ def _deploy_catalog(server, job, a: dict, mid: str) -> dict:
     opts.update(m.get("sampling") or {})                           # the model card's sampling (Flint), shown on the Edit form
     # the cards: the ones the answers name; else a layout of the model's that this machine takes (two cards that hold it
     # all: everything on them); else the card with the most free memory
-    lay = C.layout(m) if pkg == "impulse" and not a.get("cards") else None
+    from nebula import engines as E
+    lay = C.layout(m, legacy=E.is_legacy_program(binary)) if pkg == "impulse" and not a.get("cards") else None
     if lay:
         opts.update(lay["options"])
-    card = lay["card"] if lay else _cards_for(a)
+    card = lay["card"] if lay else _cards_for(a, server, binary)
     job.deploy({"name": name, "kind": pkg, **_portable_spec(server, job, pkg, binary, a), "model": paths[m["file"]], "context": int(m.get("context") or 32768),
                 "slots": 1, "options": opts, **({"card": card} if card else {}), **({"cwd": a["cwd"]} if a.get("cwd") else {})})
     return {"model": name, "test": job.test(name)}
@@ -746,7 +776,7 @@ class DeployOwn(Wizard):
         if not os.path.isfile(path):
             path, _mm = job.pull(a["link"], a["quant"])
         pkg, binary, _why = _engine_for(server, a)
-        card = _cards_for(a)
+        card = _cards_for(a, server, binary)
         job.deploy({"name": name, "kind": pkg, **_portable_spec(server, job, pkg, binary, a), "model": path, "context": int(a.get("context") or 8192),
                     "slots": 1, **({"card": card} if card else {}), "options": {"thinking": bool(a.get("thinking"))}, **({"cwd": a["cwd"]} if a.get("cwd") else {})})
         return {"model": name, "test": job.test(name)}
