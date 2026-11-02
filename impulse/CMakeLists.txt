@@ -16,6 +16,8 @@
 #   -DIMPULSE_PORTABLE=ON        a binary for other PCs: ggml-cpu at an AVX2 baseline instead of this CPU's features
 #   -DCMAKE_CUDA_ARCHITECTURES=...   default 75-real;80-real;86-real;89-real;90-real;100-real;120a-real (RTX 20 through
 #                                    RTX 50, A100, H100, B200; CUDA 13; the V100 (70) needs a CUDA 12 build of its own)
+#                                Impulse (L), for Maxwell to Volta (GTX 900, GTX 10, P100, V100), which CUDA 13 dropped:
+#                                CUDA 12.x and "50-real;52-real;60-real;61-real;70-real" (greenfield/impulse_dist.py --legacy)
 #   -DIMPULSE_TOOLS=ON           also the test drivers (impulse-gemma4, impulse-qwen35, logit-cmp) and route-oracle
 #   -DIMPULSE_FLASHNEXT=ON       also Strata's engine from flashnext/ (One Engine P1): libimpulse_fx (the engine as one
 #                                shared library impulse-server loads for a Flash-Next pack) and the standalone `strata`,
@@ -38,6 +40,35 @@ option(IMPULSE_TOOLS "also build the test drivers and route-oracle" OFF)
 option(IMPULSE_FLASHNEXT "also build Strata's engine (flashnext/) as libraries and the standalone strata" OFF)
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   set(CMAKE_CUDA_ARCHITECTURES "75-real;80-real;86-real;89-real;90-real;100-real;120a-real")
+endif()
+# CUDA 13 compiles nothing below Turing (75); say so here rather than let nvcc fail inside ggml with "Unsupported gpu
+# architecture". The compiler is the one CMake will use: CMAKE_CUDA_COMPILER, else CUDACXX, else nvcc on the PATH.
+set(_nvcc "${CMAKE_CUDA_COMPILER}")
+if(NOT _nvcc)
+  set(_nvcc "$ENV{CUDACXX}")
+endif()
+if(NOT _nvcc)
+  find_program(_nvcc_found nvcc)
+  set(_nvcc "${_nvcc_found}")
+endif()
+if(_nvcc)
+  execute_process(COMMAND "${_nvcc}" --version OUTPUT_VARIABLE _nvcc_out ERROR_QUIET)
+  string(REGEX MATCH "release ([0-9]+)\\.([0-9]+)" _ "${_nvcc_out}")
+  set(_cuda_ver "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}")
+  if(CMAKE_MATCH_1 GREATER_EQUAL 13)
+    set(_old "")
+    foreach(a ${CMAKE_CUDA_ARCHITECTURES})
+      string(REGEX MATCH "^[0-9]+" _n "${a}")
+      if(_n AND _n LESS 75)
+        list(APPEND _old ${a})
+      endif()
+    endforeach()
+    if(_old)
+      message(FATAL_ERROR "impulse: CUDA ${_cuda_ver} (${_nvcc}) cannot build ${_old}: CUDA 13 dropped "
+              "Maxwell, Pascal and Volta (below 75). Build these with a CUDA 12.x toolkit (Impulse (L): "
+              "greenfield/cuda_redist.py --version 12.9.1, -DCMAKE_CUDA_COMPILER=<it>/bin/nvcc -DCUDAToolkit_ROOT=<it>).")
+    endif()
+  endif()
 endif()
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
