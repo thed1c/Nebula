@@ -255,6 +255,14 @@ Everything builds locally with Docker; nothing here uses GitHub's minutes.
    (`impulse-flashnext-<version>-<platform>`: impulse-fx and its engine library, left out of the installers), and
    the small update (`nebula-eh-<version>-app-<platform>-x86_64.tar.gz`); attach those too, and put the pieces'
    sha256 and size in `pieces.json` before the build that ships them.
+   **Impulse (L)** (older NVIDIA cards, Maxwell to Volta: GTX 900, GTX 10, P100, V100; CUDA 13 dropped them; not in
+   the installers, a release file of its own): CUDA 12.9 (`cuda_redist.py --version 12.9.1 --out <cuda12>`), then in
+   the same Ubuntu 22.04 container build `impulse/` with `-DIMPULSE_PORTABLE=ON
+   -DCMAKE_CUDA_ARCHITECTURES="50-real;52-real;60-real;61-real;70-real"` and that CUDA (no `IMPULSE_FLASHNEXT`), then
+   `python3 greenfield/impulse_dist.py --platform linux --build <build> --cuda <cuda12> --legacy` and
+   `tar -czf impulse-legacy-<version>-linux-x86_64.tar.gz -C impulse-legacy .`. Its folder carries the CUDA 12
+   runtime and cuBLAS, and its wrapper never looks at the installer's CUDA 13 packages. A CUDA 13 compiler asked for
+   an architecture below 75 stops at the configure with an error that says so.
 4. **The network's node programs** (NVIDIA Personal-AI-Router's services): clone it and run `services/build.sh` in a `golang:1.25` container
    with `CGO_ENABLED=0 GOFLAGS=-buildvcs=false`.
 5. **The installer**:
