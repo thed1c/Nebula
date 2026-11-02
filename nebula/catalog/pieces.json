@@ -28,13 +28,13 @@
    "files": {
     "linux-x86_64": {
      "ext": "tar.xz",
-     "sha256": "",
-     "bytes": 0
+     "sha256": "e1d3f92a8004cf1fc546d8f2d5a20b061d2e6f4af7d47d22ddd90be1782659f3",
+     "bytes": 493689964
     },
     "windows-x86_64": {
      "ext": "zip",
-     "sha256": "",
-     "bytes": 0
+     "sha256": "a1222146b81e8a2d3d2dd86bc931c11369d7484741e6c89d5022b74fc1fe1783",
+     "bytes": 614731030
     }
    }
   },

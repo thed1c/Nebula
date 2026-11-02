@@ -43,6 +43,11 @@ def published(name):
     return PIN if name == E.LEGACY else None
 
 
+def unpublished(name, _real=__import__("nebula.pieces", fromlist=["pin"]).pin):
+    """The catalog as it was before Impulse (L)'s release: everything else as it is."""
+    return None if name == E.LEGACY else _real(name)
+
+
 class Env(unittest.TestCase):
     """A clean card environment per test: no real nvidia-smi, no Impulse (L) named by the environment."""
     def setUp(self):
@@ -70,12 +75,17 @@ class CardTooOldTest(Env):
         self.assertEqual(E.card_too_old_short(KEPLER, self.base), "older than every Impulse build: CPU only")
 
     def test_older_cards_without_the_piece_say_impulse_l_runs_them(self):
-        for c in (PASCAL, VOLTA, MAXWELL):
-            why = E.card_too_old(c, self.base)
-            self.assertIn(f"{c['name']} is older than Impulse's main build supports (compute {c['compute_cap']}; it needs 7.5 "
-                          "or newer)", why)
-            self.assertIn("Impulse (L), Nebula's engine for older NVIDIA cards, is not published for this computer yet: it "
-                          "runs on the CPU", why)                          # the real catalog: no sha256 until the release
+        with mock.patch("nebula.pieces.pin", side_effect=unpublished):  # a platform it is not published for
+            for c in (PASCAL, VOLTA, MAXWELL):
+                why = E.card_too_old(c, self.base)
+                self.assertIn(f"{c['name']} is older than Impulse's main build supports (compute {c['compute_cap']}; it "
+                              "needs 7.5 or newer)", why)
+                self.assertIn("Impulse (L), Nebula's engine for older NVIDIA cards, is not published for this computer yet: "
+                              "it runs on the CPU", why)
+        with mock.patch("nebula.pieces.platform_key", return_value="linux-x86_64"):   # the real catalog: 0.1.7's pieces
+            self.assertIn("Run a model offers it (a download of 470 MB, not in the installer)", E.card_too_old(PASCAL, self.base))
+        with mock.patch("nebula.pieces.platform_key", return_value="windows-x86_64"):
+            self.assertIn("(a download of 586 MB, not in the installer)", E.card_too_old(PASCAL, self.base))
         with mock.patch("nebula.pieces.pin", side_effect=published):
             why = E.card_too_old(PASCAL, self.base)
             self.assertEqual(why, "NVIDIA GeForce GTX 1080 Ti is older than Impulse's main build supports (compute 6.1; it "
@@ -203,7 +213,8 @@ class GuidedSetupTest(Env):
         from nebula import wizards as W
         srv = self.Server(self.base)
         self.cards(PASCAL)
-        pkg, binary, why = W._engine_for(srv, {})                                 # the real catalog: not published yet
+        with mock.patch("nebula.pieces.pin", side_effect=unpublished):           # not published for this platform
+            pkg, binary, why = W._engine_for(srv, {})
         self.assertEqual((pkg, binary), ("llama.cpp", W.PORTABLE))
         self.assertIn("Impulse (L), Nebula's engine for older NVIDIA cards, is not published for this computer yet", why)
         piece_here(self.base)
