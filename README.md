@@ -12,10 +12,10 @@ Everything runs on your machine, and nothing leaves it unless you say so.
 
 > **Nebula is in testing.** Things may be rough around the edges. If something goes wrong, tell us (see [Getting help](#getting-help)). That's the whole point of testing.
 
-**New in 0.1.6.3: smaller Windows updates, LFM2.5 8B.** On Windows, an update no longer downloads Python and every
-package again: it fetches only what changed, and it shows in front while it works. Liquid AI's **LFM2.5 8B**, the
-smallest and quickest model on offer, is in the model list, and picking a model in the pickers works again. Since
-0.1.6.2 Setup closes a running Nebula before it installs. Each route (Everyday, Larger, Writing, Critique) can have its
+**New in 0.1.7: older NVIDIA cards.** A GTX 900 or 10 series card, a Titan X / Xp / V or a Tesla M, P or V100 now runs
+models on **Impulse (L)**, an optional engine Nebula offers on such a computer (a download of its own, never in the
+installer). Since 0.1.6.3, Windows updates download only what
+changed, and Liquid AI's **LFM2.5 8B** is in the model list. Since 0.1.6.2 Setup closes a running Nebula before it installs. Each route (Everyday, Larger, Writing, Critique) can have its
 own instructions. Since 0.1.5, Halo runs Liquid AI's **LFM3-1.7B** with an NVIDIA card. The details are in the [changelog](CHANGELOG.md).
 
 ---
@@ -56,7 +56,7 @@ Your AI runs on **your** computer. Your chats, your documents and your history s
 |---|---|
 | You install Nebula | Downloads only, each checked against its known fingerprint where its maker publishes one: Python, Nebula's packages (from PyPI), Halo's own model and Lookup's search and document-reading models (from Hugging Face), Lookup's database program (Qdrant), NVIDIA OpenShell, and with an NVIDIA card, CUDA's libraries from NVIDIA. On Windows with the Safe sandbox: Ubuntu for WSL2 and Impulse's Linux build. |
 | You download a model | A download from Hugging Face, where the models live. |
-| Nebula needs an optional piece | A download from this project's GitHub releases, checked against its pinned fingerprint: Impulse portable (about 25 MB, only on a computer without an NVIDIA card) or Impulse's Flash-Next engine (about 105 MB, only when you set up Flash-Next). Nebula tells you first. |
+| Nebula needs an optional piece | A download from this project's GitHub releases, checked against its pinned fingerprint: Impulse portable (about 25 MB, only on a computer without an NVIDIA card), Impulse's Flash-Next engine (about 105 MB, only when you set up Flash-Next) or Impulse (L) (about 471 MB on Linux, 586 MB on Windows, only on a computer whose NVIDIA cards are all older ones: GTX 900 / 10 series, Titan X / Xp / V, Tesla M / P / V100). Nebula tells you first. |
 | You look for an update | One request to GitHub for a small signed file that names the newest version. Only when you press **Look now**, or once at start-up if you turned that on. The update itself downloads only when you click it. |
 | You turn on web search | Your search words, to Brave Search or DuckDuckGo. |
 | You add a cloud model (Anti-Gravity) | Whatever you send that model, to the company that runs it. Nebula marks these clearly. |
@@ -71,7 +71,9 @@ That's the whole list. If none of these are on, Nebula works with no internet at
 - A computer running **Linux** (we test on Ubuntu 22.04 and 24.04), or **Windows 10** (21H2 or LTSC 2021 or later)
   or **Windows 11**, 64-bit Intel or AMD.
 - An **NVIDIA graphics card** with its driver installed. We test on the RTX 30, 40 and 50 series. Impulse is also
-  built for the RTX 20 series and data center cards like the A100 and H100, but we test those less. 8 GB of video
+  built for the RTX 20 series and data center cards like the A100 and H100, but we test those less. Older cards (GTX 900
+  and 10 series, Titan X / Xp / V, Tesla M, P and V100) run on **Impulse (L)**, an optional download Nebula offers on such
+  a computer (driver 525.60.13 or newer; 528.33 on Windows). 8 GB of video
   memory runs the light model, 12 GB the all-rounder and 16 GB the biggest. **Flint**, the coding model, runs on 8 GB
   and up when the computer has RAM free for its experts: about 27 GB for Q4, 38 GB for Q6 at its 32K context (two cards that hold all of Q4
   write about twice as fast).
@@ -94,11 +96,11 @@ That's the whole list. If none of these are on, Nebula works with no internet at
 
 **On Linux:**
 
-1. Download **`nebula-eh-0.1.6.3-linux-x86_64.run`** (about 243 MB) from the [Releases page](../../releases).
+1. Download **`nebula-eh-0.1.7-linux-x86_64.run`** (about 243 MB) from the [Releases page](../../releases).
 2. Open a terminal in the folder where it downloaded and run:
 
    ```bash
-   sh nebula-eh-0.1.6.3-linux-x86_64.run
+   sh nebula-eh-0.1.7-linux-x86_64.run
    ```
 
    You don't need `sudo`. Nebula installs just for you, in your home folder. It fetches the rest as it goes (Python,
@@ -108,7 +110,7 @@ That's the whole list. If none of these are on, Nebula works with no internet at
 
 **On Windows:**
 
-1. Download **`Nebula-EH-Setup-0.1.6.3.exe`** (about 225 MB) from the [Releases page](../../releases).
+1. Download **`Nebula-EH-Setup-0.1.7.exe`** (about 225 MB) from the [Releases page](../../releases).
 2. Double-click it. It installs just for you and fetches the rest as it goes; it takes a few minutes.
 3. Setup asks **"Run your models in a Safe sandbox?"** Say **Yes** (it's the default). Each model then runs in its
    own container inside its own small Linux (Ubuntu 24.04 under WSL2), just like on Linux. If WSL2 isn't on yet,

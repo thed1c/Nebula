@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.7
+
+**Impulse (L): an optional engine for older NVIDIA cards** (Maxwell, Pascal, Volta: GTX 900 / 10 series, Titan X / Xp /
+V, Tesla M / P / V100), downloaded only on a machine that has one. Impulse's main build needs an RTX 20 or newer (the
+CUDA version it is built with dropped the older cards), so such a card was shown as CPU only. Now Run a model offers
+Impulse (L) on a computer whose NVIDIA cards are all older ones: it says what it is and how big (about 471 MB on Linux,
+586 MB on Windows) and downloads only when you go ahead; it is never in the installer. The model then runs on that
+card, and Halo uses it too once it is there. It needs NVIDIA driver 525.60.13 or newer (528.33 on Windows) and says so
+when the driver is older. One model runs on cards of one kind: an older card and an RTX card together are refused, with
+the reason. Older cards still (Kepler: GTX 600 / 700, Tesla K80) stay on the CPU, and Flash-Next stays on RTX 30 and
+newer. On Windows the Safe sandbox carries Impulse's main build only, so a model on Impulse (L) runs outside the
+sandbox, and Nebula says so.
+
 ## 0.1.6.3
 
 **LFM2.5 8B in the model list.** Liquid AI's LFM2.5-8B-A1B, the smallest and quickest model on offer, is now in
