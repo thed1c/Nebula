@@ -33,6 +33,38 @@
    }
   },
   {
+   "id": "lfm25-8b",
+   "name": "LFM2.5 8B",
+   "maker": "Liquid AI",
+   "about": "The smallest and quickest: everyday answers on a 6 GB card and 16 GB of RAM. Text only.",
+   "repo": "LiquidAI/LFM2.5-8B-A1B-GGUF",
+   "revision": "49c14831707011e64d70b2ebd8462ba08d608434",
+   "file": "LFM2.5-8B-A1B-Q6_K.gguf",
+   "sha256": "7ccf57a2d410d8822d1560a1ca10c8318f3e15d6a8f6d42d1903d58e80ea20a6",
+   "download_gb": 7.0,
+   "needs": {
+    "gpu_mb": 6000,
+    "ram_mb": 16000,
+    "disk_mb": 8000
+   },
+   "context": 32768,
+   "verified": "lfm2moe, the same engine as LFM2.5 24B (impulse/docs/LFM25.md); Liquid AI's own Q6_K, the file Impulse was profiled on (impulse/CHANGELOG.md, Strata-Lite 0.2.3 graph reuse)",
+   "friends": true,
+   "variants": {
+    "standard": {},
+    "uncensored": {
+     "repo": "gaston-parravicini/LFM2.5-8B-A1B-Uncensored-Gaston-GGUF",
+     "revision": "c4e8cb570263f2d6f79911f3ecf3538d143d682f",
+     "file": "LFM2.5-8B-A1B-Uncensored-Gaston-Q6_K.gguf",
+     "sha256": "4adb40d72180943df90139c2874efcc69bfc812670b2f31dd9a7828e6b063bc0",
+     "download_gb": 7.0,
+     "content": "uncensored build",
+     "source": "abliterated (NousResearch llm-abliteration, patched for lfm2moe; layers 11-23, refusal direction at layer 16, norm-preserving); 1/100 AdvBench refusals by its card; Q6_K with an imatrix",
+     "maker": "Liquid AI (gaston-parravicini's abliterated build)"
+    }
+   }
+  },
+  {
    "id": "gemma4-26b",
    "name": "Gemma 4 26B",
    "maker": "Google (HauhauCS's QAT build)",
@@ -255,7 +287,8 @@
  },
  "recommend": [
   "gemma4-26b",
-  "lfm25-24b"
+  "lfm25-24b",
+  "lfm25-8b"
  ],
  "variants": {
   "standard": "Standard: the makers' own release; it declines some requests",

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+**LFM2.5 8B in the model list.** Liquid AI's LFM2.5-8B-A1B, the smallest and quickest model on offer, is now in
+first run and Deploy your own: Liquid AI's own Q6_K file (7.0 GB, pinned and checked against its hash), for a 6 GB
+card and 16 GB of RAM, and offered to friends. Uncensored picks gaston-parravicini's abliterated build of the same
+model (Q6_K, pinned and hash-checked). Impulse runs it on the same engine as LFM2.5 24B. On a computer too small for
+Gemma 4 26B and LFM2.5 24B it is the model Nebula recommends. Text only.
+
 ## 0.1.6.2
 
 **Windows: Setup closes Nebula first.** Setup over a Nebula that was still open left part of its Python in place (the

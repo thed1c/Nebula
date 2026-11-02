@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 
-from nebula import gravity
+from nebula import catalog, gravity
 from nebula.config import Config
 from nebula.server import make_server
 from nebula.tests.fake_engine import FakeEngine
@@ -107,7 +107,14 @@ class ModelWizardsTest(Base):
         qwen = next(o for o in opts if o["value"] == "qwen36-35b")
         self.assertTrue(qwen["lacks"])                                                    # wants a 16 GB card
         friends = call(self.base, "/api/wizards/join/options", {"field": "friend_catalog", "answers": {}})[1]["options"]
-        self.assertEqual(sorted(o["value"] for o in friends), ["flint-40b", "flint-40b-q6", "gemma4-26b", "lfm25-24b", "qwen36-35b"])   # all offered to friends
+        self.assertEqual(sorted(o["value"] for o in friends), ["flint-40b", "flint-40b-q6", "gemma4-26b", "lfm25-24b", "lfm25-8b", "qwen36-35b"])   # all offered to friends
+
+    def test_a_variant_brings_its_own_file_and_hash(self):
+        m = next(m for m in catalog.load()["models"] if m["id"] == "lfm25-8b")
+        std, unc = catalog.variant_of(m, "standard"), catalog.variant_of(m, "uncensored")
+        self.assertEqual(std["file"], "LFM2.5-8B-A1B-Q6_K.gguf")
+        self.assertEqual(unc["file"], "LFM2.5-8B-A1B-Uncensored-Gaston-Q6_K.gguf")
+        self.assertNotEqual(unc["sha256"], std["sha256"])                                 # never the standard file's hash
 
     def test_run_here_one_click_cancel_apply_undo(self):
         answers = {"source": "here", "model": "gemma4-26b", "variant": "uncensored", "binary": FAKE, "cwd": ROOT}
