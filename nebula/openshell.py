@@ -372,12 +372,20 @@ def engine_program(binary: str) -> str:
     return real
 
 
+def is_legacy(binary: str) -> bool:
+    """Impulse (L)'s program (the CUDA 12 build for older cards): the CUDA 12 runtime is beside it."""
+    return os.path.isfile(os.path.join(os.path.dirname(engine_program(binary)), "libcudart.so.12"))
+
+
 def _lib_path(binary: str) -> str:
     """Where the program's libraries are found, as its wrapper would: beside it, then NVIDIA's pip packages in the
-    installer's Python (python/lib/python3.12/site-packages/nvidia/cu13/lib beside impulse/), then this Python's."""
+    installer's Python (python/lib/python3.12/site-packages/nvidia/cu13/lib beside impulse/), then this Python's.
+    Impulse (L)'s: beside it only, as its own wrapper does (CUDA 13's libraries cannot run its cards)."""
     import glob
     import sysconfig
     d = os.path.dirname(os.path.realpath(binary))
+    if is_legacy(binary):
+        return d
     dirs = [d] + glob.glob(os.path.join(d, "..", "python", "lib", "python3*", "site-packages", "nvidia", "cu1*", "lib"))
     dirs += glob.glob(os.path.join(sysconfig.get_paths()["purelib"], "nvidia", "cu1*", "lib"))
     return ":".join([os.path.realpath(x) for x in dirs if os.path.isdir(x)] + ([os.environ["LD_LIBRARY_PATH"]] if os.environ.get("LD_LIBRARY_PATH") else []))
@@ -393,6 +401,8 @@ def engine_image_tag(binary: str, extras=()) -> str:
             for chunk in iter(lambda: f.read(1 << 22), b""):
                 h.update(chunk)
     name = re.sub(r"[^a-z0-9_.-]+", "-", os.path.basename(os.path.realpath(binary)).lower()).strip("-.") or "engine"
+    if is_legacy(binary):                       # Impulse (L): an image of its own name beside the main build's
+        name += "-legacy"
     return f"nebula-engine-{name}:{h.hexdigest()[:12]}"
 
 
