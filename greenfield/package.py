@@ -354,6 +354,32 @@ def make_flashnext(impulse: Path, plat: str, out: Path) -> Path | None:
     return dest
 
 
+def make_legacy(legacy: Path, plat: str, out: Path) -> Path:
+    """impulse-legacy-<version>-<platform>-x86_64: Impulse (L), the CUDA 12 build for older NVIDIA cards (Maxwell, Pascal,
+    Volta), from impulse_dist.py --legacy's folder: the piece Nebula downloads when the owner asks for it on such a card
+    (nebula/catalog/pieces.json), never in the installers. Linux: tar.xz at xz -9e (its CUDA libraries are most of it)."""
+    files = sorted(f for f in legacy.iterdir() if f.is_file())
+    if not any(f.name.startswith("impulse-server") for f in files):
+        raise SystemExit(f"{legacy}: no impulse-server (impulse_dist.py --legacy writes the folder)")
+    out.mkdir(parents=True, exist_ok=True)
+    if plat == "windows":
+        import zipfile
+        dest = out / f"impulse-legacy-{version()}-windows-x86_64.zip"
+        with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+            for f in files:
+                z.write(f, f.name)
+    else:
+        import lzma
+        dest = out / f"impulse-legacy-{version()}-linux-x86_64.tar.xz"
+        with tarfile.open(dest, "w:xz", preset=9 | lzma.PRESET_EXTREME) as t:   # keeps the wrapper's exec bit
+            for f in files:
+                t.add(f, arcname=f.name)
+    h = hashlib.sha256(dest.read_bytes()).hexdigest()
+    (out / (dest.name + ".sha256")).write_text(f"{h}  {dest.name}\n")
+    say("wrote", dest, f"{dest.stat().st_size / 2**20:.0f} MB (Impulse (L), a piece of its own)")
+    return dest
+
+
 def make_app(pay: Path, plat: str, out: Path) -> Path:
     """nebula-eh-<version>-app-<platform>.tar.gz: the small update (nebula/updates.py), Nebula's wheel and the package
     versions it was tested with, for an install whose Impulse and the rest beside Nebula stay as they are."""
@@ -410,6 +436,7 @@ def main(argv=None) -> int:
     ap.add_argument("--pair-bin", type=Path, help="PAIR's services (services/build/bin of NVIDIA/Personal-AI-Router)")
     ap.add_argument("--pair-src", type=Path, help="PAIR's source, for its LICENSE and notices")
     ap.add_argument("--sandbox-impulse", type=Path, help="Windows: Impulse's Linux build (impulse-<v>-linux-x86_64.tar.gz) the Safe sandbox fetches from the release")
+    ap.add_argument("--impulse-legacy", type=Path, help="Impulse (L)'s folder (impulse_dist.py --legacy): written as a piece of its own")
     ap.add_argument("--offline", action="store_true", help="carry Python, the packages and CUDA's libraries inside (no internet at install)")
     ap.add_argument("--out", type=Path, default=ROOT / "dist")
     ap.add_argument("--work", type=Path, default=None)
@@ -421,6 +448,8 @@ def main(argv=None) -> int:
     make_app(pay, a.platform, a.out)
     if a.impulse:
         make_flashnext(a.impulse, a.platform, a.out)
+    if a.impulse_legacy:
+        make_legacy(a.impulse_legacy, a.platform, a.out)
     if a.platform == "linux":
         make_run(pay, a.out)
     else:

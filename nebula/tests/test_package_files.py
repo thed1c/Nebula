@@ -69,6 +69,27 @@ class PiecesOutOfTheInstallerTest(unittest.TestCase):
         self.assertTrue((out / (dest.name + ".sha256")).is_file())
         self.assertIsNone(P.make_flashnext(Path(tempfile.mkdtemp()), "linux", out))          # a build without Flash-Next
 
+    def test_impulse_legacy_is_a_piece_of_its_own_as_tar_xz(self):
+        import json
+        import tarfile
+        import tempfile
+        imp, out = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
+        for n in ("impulse-server", "impulse-server.bin", "libcudart.so.12"):
+            (imp / n).write_text(n)
+        (imp / "impulse-server").chmod(0o755)
+        dest = P.make_legacy(imp, "linux", out)
+        m = json.loads((ROOT / "nebula" / "catalog" / "pieces.json").read_text())
+        want = (m["url"].rsplit("/", 1)[1].replace("{piece}", "impulse-legacy").replace("{version}", P.version())
+                .replace("{platform}", "linux-x86_64").replace("{ext}", m["pieces"]["impulse-legacy"]["files"]["linux-x86_64"]["ext"]))
+        self.assertEqual(dest.name, want)
+        self.assertTrue(dest.name.endswith(".tar.xz"))
+        with tarfile.open(dest, "r:xz") as t:
+            self.assertEqual(sorted(t.getnames()), ["impulse-server", "impulse-server.bin", "libcudart.so.12"])
+            self.assertTrue(t.getmember("impulse-server").mode & 0o111)                      # the wrapper stays a program
+        self.assertTrue((out / (dest.name + ".sha256")).is_file())
+        with self.assertRaises(SystemExit):
+            P.make_legacy(Path(tempfile.mkdtemp()), "linux", out)                            # not Impulse (L)'s folder
+
     def test_no_installer_carries_llama_server(self):
         src = (ROOT / "greenfield" / "package.py").read_text()
         self.assertNotIn("--halo-server", src)
