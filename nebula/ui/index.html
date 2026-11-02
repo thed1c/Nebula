@@ -2754,7 +2754,7 @@
   function renderEngines() {
     const v = engView, cards = v.cards || [];
     const openOut = new Set([...document.querySelectorAll("#eng-list .eng")].filter(b => b.querySelector("details")?.open).map(b => b.dataset.eng));   // an open output stays open
-    $("eng-cards").textContent = cards.length ? "Cards: " + cards.map(c => `${c.machine ? c.machine + " · " : ""}${c.index} · ${c.name} · ${c.unreachable ? "not reachable now" : c.too_old ? "older than this engine build: CPU only" : mb(c.memory_mb - c.used_mb) + " free of " + mb(c.memory_mb)}`).join("   ")
+    $("eng-cards").textContent = cards.length ? "Cards: " + cards.map(c => `${c.machine ? c.machine + " · " : ""}${c.index} · ${c.name} · ${c.unreachable ? "not reachable now" : c.too_old ? (c.too_old_short || "older than this engine build: CPU only") : mb(c.memory_mb - c.used_mb) + " free of " + mb(c.memory_mb)}`).join("   ")
       : "No GPU found on this machine (nvidia-smi): engines run without a card pin.";
     $("eng-list").innerHTML = (v.engines || []).map(e => {
       const s = e.spec, f = e.fit || {}, running = ["ready", "loading", "starting", "attached", "draining"].includes(e.state);
@@ -2837,7 +2837,7 @@
       + field("binary", "Engine binary (blank: the package's own)", "text", "") + field("model", "Model file (.gguf)", "text", "models/small.gguf")
       + field("host", "Listens on") + field("port", "Port", "number", "8080") + field("context", "Context per slot", "number", "32768")
       + field("slots", "Parallel slots", "number")
-      + `<label>Card<select name="card"><option value="">any</option>${String(s.card || "").includes(",") ? `<option value="${esc(s.card)}" selected>${esc(String(s.card).split(",").length + " cards: " + s.card)}</option>` : ""}${cards.map(c => `<option value="${esc(c.uuid)}" ${c.uuid === s.card || ((c.machine || "") === (s.machine || "") && String(c.index) === String(s.card)) ? "selected" : ""}${c.too_old ? ` disabled title="${esc(c.too_old)}"` : ""}>${esc((c.machine ? c.machine + " · " : "") + c.index + " · " + c.name + (c.too_old ? " (older than this engine build: CPU only)" : ""))}</option>`).join("")}</select></label>`
+      + `<label>Card<select name="card"><option value="">any</option>${String(s.card || "").includes(",") ? `<option value="${esc(s.card)}" selected>${esc(String(s.card).split(",").length + " cards: " + s.card)}</option>` : ""}${cards.map(c => `<option value="${esc(c.uuid)}" ${c.uuid === s.card || ((c.machine || "") === (s.machine || "") && String(c.index) === String(s.card)) ? "selected" : ""}${c.too_old ? ` disabled title="${esc(c.too_old)}"` : ""}>${esc((c.machine ? c.machine + " · " : "") + c.index + " · " + c.name + (c.too_old ? ` (${c.too_old_short || "older than this engine build: CPU only"})` : ""))}</option>`).join("")}</select></label>`
       + field("flags", "Extra args", "text", "--any-flag value")
       + `<label>Shared with guests<select name="guests"><option value="">no: only you</option><option value="1" ${s.guests ? "selected" : ""}>yes: each guest kept to its own cache</option></select></label>`
       + `<label>Start with Nebula<select name="autostart"><option value="">no</option><option value="1" ${s.autostart ? "selected" : ""}>yes</option></select></label>`

@@ -178,8 +178,12 @@ def get(server, path: str, query: str = "") -> dict | None:
         return {"pulls": pulls(server).status(), "models_dir": models_dir(server), "token": bool(pulls(server).token())}
     if path == "/api/yard/engines":
         from nebula import machines
-        cards = [{**c, **({"too_old": E.card_too_old(c)} if E.card_too_old(c) else {})}    # Impulse cannot use it: said, greyed out
-                 for c in E.cards() + machines.cards(server.cfg)]
+        bd = server.cfg.base_dir
+
+        def old(c):                                   # Impulse cannot use it: said, greyed out (an older card: Impulse (L))
+            why = E.card_too_old(c, bd, driver=not c.get("machine"))
+            return {"too_old": why, "too_old_short": E.card_too_old_short(c, bd, driver=not c.get("machine"))} if why else {}
+        cards = [{**c, **old(c)} for c in E.cards() + machines.cards(server.cfg)]
         return {"engines": yard.status(), "cards": cards, "kinds": list(E.KINDS),
                 "cache_types": list(E.CACHE_BYTES), "machines": [s["name"] for s in server.cfg.raw.get("servers") or [] if s.get("gateway")]}
     if path.startswith("/api/yard/engines/"):
@@ -257,7 +261,7 @@ def post(server, path: str, req: dict) -> dict | None:
             md = models_dir(server)
             os.makedirs(md, exist_ok=True)
             r["disk_free"] = shutil.disk_usage(md).free
-            cards = [c for c in E.cards() if not E.card_too_old(c)]          # a card Impulse cannot use is no place for it
+            cards = [c for c in E.cards() if not E.card_too_old(c, server.cfg.base_dir)]   # a card Impulse cannot use is no place for it
             best = max((c["memory_mb"] - c["used_mb"] for c in cards), default=None)
             for c in r["choices"]:
                 c["fits_disk"] = c["size"] <= r["disk_free"]

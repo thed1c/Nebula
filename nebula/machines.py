@@ -150,8 +150,11 @@ def arch_gap(binary: str, cards: list[dict]) -> str | None:
             continue
         need = int(cc.replace(".", ""))
         if need not in archs:
+            from nebula import engines
+            fix = ("Impulse (L), the build for older NVIDIA cards, has them" if engines.is_legacy_card(c) else
+                   f"use a build that includes sm_{need}")
             return (f"its Impulse build has no kernels for {c.get('name')} (sm_{need}); it carries "
-                    f"{', '.join('sm_%d' % a for a in sorted(archs))}: use a build that includes sm_{need}")
+                    f"{', '.join('sm_%d' % a for a in sorted(archs))}: {fix}")
     return None
 
 
