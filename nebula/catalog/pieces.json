@@ -20,6 +20,23 @@
     }
    }
   },
+  "impulse-legacy": {
+   "label": "Impulse (L)",
+   "why": "the engine for older NVIDIA cards (Maxwell, Pascal, Volta: GTX 900 and 10 series, Titan X / Xp / V, Tesla M, P and V100), which Impulse's main build cannot run",
+   "program": "impulse-server",
+   "files": {
+    "linux-x86_64": {
+     "ext": "tar.xz",
+     "sha256": "",
+     "bytes": 0
+    },
+    "windows-x86_64": {
+     "ext": "zip",
+     "sha256": "",
+     "bytes": 0
+    }
+   }
+  },
   "impulse-flashnext": {
    "label": "Impulse Flash-Next",
    "why": "the engine for Qwen3.8 Flash-Next models (impulse-fx and its engine library)",

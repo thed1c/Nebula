@@ -21,18 +21,38 @@ class PiecesTest(unittest.TestCase):
         with tarfile.open(self.arc, "w:gz") as t:
             t.add(prog, arcname="impulse-fx")
 
-    def catalog(self, sha):
+    def catalog(self, sha, ext="tar.gz"):
         p = self.tmp / "pieces.json"
         p.write_text(json.dumps({"version": "9.9", "url": "file://" + str(self.tmp) + "/{piece}-{version}-{platform}.{ext}",
                                  "pieces": {"impulse-flashnext": {"label": "Impulse Flash-Next", "why": "the engine for Flash-Next models",
                                                                   "program": "impulse-fx",
-                                                                  "files": {"linux-x86_64": {"ext": "tar.gz", "sha256": sha, "bytes": 3 * 2**20}}}}}))
+                                                                  "files": {"linux-x86_64": {"ext": ext, "sha256": sha, "bytes": 3 * 2**20}}}}}))
         return mock.patch.multiple(pieces, CATALOG=p, platform_key=lambda: "linux-x86_64")
 
-    def test_the_real_catalog_names_both_pieces_for_both_platforms(self):
+    def test_the_real_catalog_names_every_piece_for_both_platforms(self):
         m = json.loads(pieces.CATALOG.read_text())
-        for name in ("impulse-portable", "impulse-flashnext"):
+        for name in ("impulse-portable", "impulse-flashnext", "impulse-legacy"):
             self.assertEqual(set(m["pieces"][name]["files"]), {"linux-x86_64", "windows-x86_64"})
+        leg = m["pieces"]["impulse-legacy"]
+        self.assertEqual((leg["label"], leg["program"]), ("Impulse (L)", "impulse-server"))
+        self.assertEqual({k: f["ext"] for k, f in leg["files"].items()}, {"linux-x86_64": "tar.xz", "windows-x86_64": "zip"})
+        self.assertIn("older NVIDIA cards", leg["why"])
+
+    def test_a_tar_xz_and_a_zip_unpack_too(self):
+        prog = self.tmp / "impulse-fx"
+        for ext in ("tar.xz", "zip"):
+            arc = self.tmp / f"impulse-flashnext-9.9-linux-x86_64.{ext}"
+            if ext == "zip":
+                import zipfile
+                with zipfile.ZipFile(arc, "w") as z:
+                    z.write(prog, "impulse-fx")
+            else:
+                with tarfile.open(arc, "w:xz") as t:
+                    t.add(prog, arcname="impulse-fx")
+            base = self.tmp / ("conf-" + ext)
+            with self.catalog(hashlib.sha256(arc.read_bytes()).hexdigest(), ext):
+                self.assertEqual(pieces.fetch("impulse-flashnext", str(base)), str(base / "nebula-impulse-flashnext" / "impulse-fx"))
+            self.assertEqual((base / "nebula-impulse-flashnext" / "impulse-fx").read_text(), "#!/bin/sh\n")
 
     def test_it_says_what_how_big_and_why_then_fetches_and_checks(self):
         base = self.tmp / "conf"

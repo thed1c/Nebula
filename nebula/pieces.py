@@ -97,7 +97,7 @@ def fetch(name: str, base_dir: str | None, progress=None) -> str:
             with zipfile.ZipFile(arc) as z:
                 z.extractall(new)
         else:
-            with tarfile.open(arc) as t:
+            with tarfile.open(arc, "r:*") as t:                 # tar.gz, or tar.xz (Impulse (L): its CUDA libraries)
                 t.extractall(new, filter="data")
         if not (new / program(name)).is_file():
             raise RuntimeError(f"{p['label']}'s download has no {program(name)}")
