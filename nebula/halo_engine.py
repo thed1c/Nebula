@@ -128,15 +128,17 @@ def has_nvidia() -> bool:
 
 def find_servers(base_dir: str | None = None) -> list[tuple[str, list[str]]]:
     """Halo's runtimes in the order tried (design decision 10-21: Halo in an Impulse Engine): Impulse with an NVIDIA card
-    (its CUDA build cannot start without one), then Impulse portable (CPU + Vulkan), then a llama-server of the owner's."""
+    (its CUDA build cannot start without one; Impulse (L)'s when the cards are all older ones and it is here), then Impulse
+    portable (CPU + Vulkan), then a llama-server of the owner's."""
     env = os.environ.get("NEBULA_HALO_SERVER")
     if env:
         from nebula import cmdline
         return [("halo-server", cmdline.split(env))]
     out = []
     if has_nvidia():
-        from nebula import packages
-        imp = packages.locate("impulse", base_dir)
+        from nebula import engines, packages
+        old, _why = engines.legacy_here(base_dir)        # only older NVIDIA cards: Impulse (L), when it is here
+        imp = old if old and old != engines.LEGACY else packages.locate("impulse", base_dir)
         if imp:
             out.append(("Impulse", [imp]))
     port = find_portable(base_dir)
@@ -234,7 +236,7 @@ class HaloEngine:
         except Exception:  # noqa: BLE001 - no cards: the CPU
             have = []
         self.no_cards = not have                          # said on Halo's panel: no GPU here, not "no room"
-        have = [c for c in have if not engines.card_too_old(c)]   # older than Impulse's build: Halo stays on the CPU
+        have = [c for c in have if not engines.card_too_old(c, self.cfg.base_dir)]   # no build for it here: Halo stays on the CPU
         specs = (self.cfg.raw or {}).get("engines") or []
         try:                                              # only cards its Impulse build has kernels for (sm_75 is not in every one)
             from nebula import machines
