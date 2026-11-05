@@ -41,11 +41,12 @@ KINDS = {
     "guest.refused": "notice",         # a guest asked for a model not shared with it
     "guest.paused": "warn", "guest.limited": "warn",
     "gravity.invite": "notice", "gravity.join": "warn", "gravity.joined": "notice", "gravity.refused": "warn",
-    "gravity.grants": "notice", "gravity.revoked": "notice", "gravity.relay": "notice",
+    "gravity.grants": "notice", "gravity.revoked": "notice", "gravity.relay": "notice", "gravity.blocked": "warn",
     "share.changed": "notice",         # a model marked shared or not, a caller's ticks changed
     "server.added": "notice", "server.trust": "notice", "server.removed": "notice",
     "network.invite": "notice", "network.joined": "notice",
     "entry.added": "notice", "entry.changed": "notice", "entry.removed": "notice", "otel.settings": "notice",
+    "syslog.settings": "notice",       # where the logs are sent (the Syslog panel on Captain's Log)
     "halo.action": "alert", "halo.undo": "notice", "halo.ask": "alert", "halo.error": "warn",
     "admin.refused": "warn",
     "sessions.deleted": "notice",      # conversations deleted for good on the page (how many, never what)
@@ -88,7 +89,7 @@ class SecLog:
         self.db.execute("PRAGMA journal_mode=WAL" if path else "PRAGMA journal_mode=MEMORY")
         migrate.sqlite_upgrade(self.db, "the security log", [SCHEMA], path)
         self.lock = threading.Lock()
-        self.recent: dict[tuple, tuple[int, float]] = {}        # (kind, who, what) -> (seq, when it was last written)
+        self.recent: dict[tuple, tuple[int, float]] = {}        # (kind, who, what, request) -> (seq, when last written)
         self.key_seen: dict[str, float] = {}
         self.listeners: list = []                               # called with each new row (Halo wakes on them)
 
@@ -100,10 +101,11 @@ class SecLog:
 
     # --- writing
     def add(self, kind: str, who: str | None = None, what: str | None = None, **detail) -> int:
-        """One event; a repeat of the same (kind, who, what) within COLLAPSE_S is counted on the row it repeats."""
+        """One event; a repeat of the same (kind, who, what) within COLLAPSE_S is counted on the row it repeats. A page
+        write's request is part of it: a switch turned off then on again within a minute is two rows, not one "off"."""
         now = time.time()
         sev = detail.pop("severity", None) or KINDS.get(kind, "info")
-        key = (kind, who, what)
+        key = (kind, who, what, json.dumps(detail.get("request"), sort_keys=True, default=str))
         with self.lock:
             last = self.recent.get(key)
             if last is not None and now - last[1] < COLLAPSE_S:
@@ -218,7 +220,9 @@ WRITES = [
     (r"^/api/yard/node/public-relay$", "gravity.relay", None),
     (r"^/api/yard/node/join$", "gravity.joined", None),
     (r"^/api/yard/node/peers/([^/]+)/grants$", "gravity.grants", "peer"),
+    (r"^/api/yard/node/peers/([^/]+)/limits$", "gravity.grants", "peer"),
     (r"^/api/yard/node/peers/([^/]+)/revoke$", "gravity.revoked", "peer"),
+    (r"^/api/yard/node/peers/([^/]+)/block$", "gravity.blocked", "peer"),
     (r"^/api/yard/node/models/([^/]+)/risky$", "share.changed", "model"),
     (r"^/api/yard/servers/trust$", "server.trust", None),
     (r"^/api/yard/servers/install$", "server.added", None),
@@ -234,10 +238,12 @@ WRITES = [
     (r"^/api/lookup/collections/([^/]+)/share$", "share.changed", "collection"),
     (r"^/api/halo$", "halo.settings", None),
     (r"^/api/otel$", "otel.settings", None),
+    (r"^/api/syslog$", "syslog.settings", None),
 ]
 _WRITES = [(_re.compile(p), k, w) for p, k, w in WRITES]
 SAFE_FIELDS = ("id", "name", "models", "class", "guest", "kind", "address", "host", "port", "fingerprint", "label",
-               "shared", "tenants", "scope", "formats", "risky", "confirm", "enabled", "on")
+               "shared", "tenants", "scope", "formats", "risky", "confirm", "enabled", "on", "model", "calls_per_hour",
+               "max_output_tokens", "max_concurrent")
 
 
 def page_write(log: SecLog | None, path: str, req: dict, status: int) -> None:

@@ -51,6 +51,14 @@ class LogTest(unittest.TestCase):
         self.assertEqual(self.log.counts()["auth.refused"], 51)
         self.assertEqual(self.log.verify()["rows"], 2)
 
+    def test_a_switch_off_then_on_is_two_rows(self):
+        """A relay turned off and on again within a minute showed as one "off" row (the "on" folded into it)."""
+        self.log.add("gravity.relay", "owner", None, status=200, request={"on": False})
+        self.log.add("gravity.relay", "owner", None, status=200, request={"on": True})
+        self.log.add("gravity.relay", "owner", None, status=200, request={"on": True})      # a true repeat still folds
+        rows = self.log.read()
+        self.assertEqual([(r["detail"]["request"]["on"], r["count"]) for r in rows], [(True, 2), (False, 1)])
+
     def test_filters(self):
         self.log.add("gravity.join", "peer:a", "friend")
         self.log.add("key.used", "api", "api/1")

@@ -20,6 +20,7 @@ import os
 import secrets
 import threading
 import time
+from pathlib import Path
 
 
 class WizardError(ValueError):
@@ -62,6 +63,21 @@ def _need(a: dict, *keys):
             raise WizardError(400, f"{k.replace('_', ' ')} is needed")
 
 
+def _wanted_name(server, a: dict, base: str) -> str:
+    """The name the owner gave (Build an engine's Name), checked: a model's name rules and not taken; else one free
+    name made from `base`."""
+    import re
+    want = str(a.get("name") or "").strip()
+    if not want:
+        return _free_name(server, base)
+    clean = re.sub(r"[^a-z0-9._-]+", "-", want.lower()).strip("-")[:40]
+    if not clean:
+        raise WizardError(400, "a name of letters, digits, dots, dashes or underscores")
+    if clean in {t.name for t in server.cfg.tiers} | {e.get("name") for e in server.cfg.engines}:
+        raise WizardError(400, f"a model or an engine is already named {clean}: pick another name")
+    return clean
+
+
 def _free_name(server, base: str) -> str:
     import re
     base = re.sub(r"[^a-z0-9._-]+", "-", base.lower()).strip("-")[:40] or "model"
@@ -93,6 +109,49 @@ class Wizard:
     def describe(self, server) -> dict:
         return {"name": self.name, "title": self.title, "about": self.about, "empty": self.empty, "steps": self.steps,
                 "defaults": self.defaults(server)}
+
+
+# a PC with an older NVIDIA card and a newer one: which card(s) a model goes on (the best one by default; an older card,
+# or both together, run on Impulse (L), downloaded first when it is not here). Shown only on such a PC (mixed_cards).
+CARD_FIELD = {"key": "card_choice", "label": "Graphics card", "type": "select", "options_from": "card_choice",
+              "when_field": "mixed_cards"}
+
+
+def _card_choices(server) -> list:
+    """The card choice on a mixed PC: Nebula's pick (the default), each card, all of them together; an older card's
+    choice says it runs on Impulse (L) and what it downloads."""
+    from nebula import engines as E, pieces
+    have = [c for c in E.cards() if E.legacy_runs(c)]
+    if not E.mixed_pc(have):
+        return []
+    base = server.cfg.base_dir
+    leg = E.legacy_program(base) is not None
+    gap = E.legacy_driver_gap()
+    p = pieces.pin(E.LEGACY)
+    note = (" · Impulse (L)" + ("" if leg else f", a {max(1, p['bytes'] // 2**20)} MB download first" if p else ", not published yet"))
+    blocked = bool(gap) or (not leg and p is None)
+    best = _cards_for({}, server, None)
+    pick = next((c for c in have if str(c.get("uuid") or c.get("index")) == best), None)
+    free = lambda c: f"{max(0, int(c.get('memory_mb', 0)) - int(c.get('used_mb', 0))) / 1024:.1f} GB free"
+    out = [{"value": "", "label": f"Nebula's pick: {pick['name']} · {free(pick)}" if pick else "Nebula's pick"}]
+    for c in have:
+        old = E.is_legacy_card(c)
+        out.append({"value": str(c.get("uuid") or c.get("index")), "label": f"{c['name']} · {free(c)}" + (note if old else ""),
+                    **({"disabled": True} if old and blocked else {})})
+    total = sum(max(0, int(c.get("memory_mb", 0)) - int(c.get("used_mb", 0))) for c in have) / 1024
+    out.append({"value": "all", "label": f"All {len(have)} together · {total:.1f} GB free" + note, **({"disabled": True} if blocked else {})})
+    return out
+
+
+def _with_card_choice(a: dict) -> dict:
+    """The answers with the card choice as the cards they name (the rest of the setup reads "cards")."""
+    ch = a.get("card_choice")
+    if not ch or a.get("cards"):
+        return a
+    from nebula import engines as E
+    if ch == "all":
+        return dict(a, cards=[str(c.get("uuid") or c.get("index")) for c in E.cards() if E.legacy_runs(c)])
+    return dict(a, cards=[ch])
 
 
 VARIANT_FIELD = {"key": "variant", "label": "", "type": "choice", "options": [
@@ -174,7 +233,7 @@ def _cached_plan(server, a: dict) -> dict:
 def _cached_deploy(server, job, a: dict) -> dict:
     m = _cached(server, a["cached"])
     pkg, binary, _why = _engine_for(server, {k: v for k, v in a.items() if k != "package"} if not a.get("advanced") else a)
-    name = a.get("name") or _free_name(server, m["repo"].split("/")[-1].lower().replace("-gguf", "")[:24])
+    name = _wanted_name(server, a, m["repo"].split("/")[-1].lower().replace("-gguf", "")[:24])
     opts = {"mmproj": True, "mmproj_file": m["mmproj"]} if m.get("mmproj") else {}
     card = _cards_for(a, server, binary)
     job.deploy({"name": name, "kind": pkg, **_portable_spec(server, job, pkg, binary, a), "model": m["path"], "context": int(a.get("context") or 8192),
@@ -196,10 +255,21 @@ def _engine_for(server, a: dict) -> tuple[str, str | None, str | None]:
     runs, why = C.impulse_runs_here()
     if a.get("package") and (runs or a["package"] != "impulse"):    # Advanced: chosen by hand (Impulse where it runs)
         return a["package"], a.get("binary") or P.locate(a["package"], server.cfg.base_dir), None
+    from nebula import engines as E
+    if runs and a.get("cards"):                             # cards chosen on a mixed PC: an older one runs Impulse (L)
+        have = E.cards()
+        cs = [c for c in have if {str(c.get("uuid")), str(c.get("index"))} & {str(x) for x in a["cards"]}]
+        if any(E.is_legacy_card(c) for c in cs):
+            prog, why = E.impulse_build(cs, None, server.cfg.base_dir)
+            if prog:
+                return "impulse", a.get("binary") or prog, None
+            from nebula import pieces
+            if E.legacy_program(server.cfg.base_dir) is None and pieces.pin(E.LEGACY) is not None and not E.legacy_driver_gap():
+                return "impulse", E.LEGACY, None
+            return "impulse", None, why
     if runs:
         b = a.get("binary") or P.locate("impulse", server.cfg.base_dir)
         return "impulse", b, None if b else "Impulse isn't on this computer yet"
-    from nebula import engines as E
     old, owhy = E.legacy_here(server.cfg.base_dir)          # older NVIDIA cards: Impulse (L), downloaded first if not here
     if old:
         return "impulse", a.get("binary") or old, owhy
@@ -408,7 +478,7 @@ def _repo_lines(server, m: dict, a: dict) -> tuple[list, list]:
 def _deploy_repo(server, job, a: dict, m: dict) -> dict:
     x = _repo_choice(server, m, a)
     path = job.pull(a["fn_link"], x["choice"]["id"])
-    name = a.get("name") or _free_name(server, m["id"])
+    name = _wanted_name(server, a, m["id"])
     card = _cards_for(a)
     from nebula import flashnext
     job.deploy({"name": name, "kind": "impulse", "model": path, "context": int(m.get("context") or 32768), "slots": 1,
@@ -434,25 +504,58 @@ def _cards_for(a: dict, server=None, binary=None) -> str | None:
     else:
         have = [c for c in have if not engines.card_too_old(c, base)   # older than Impulse's build: the model stays in RAM
                 and not (server is None and engines.is_legacy_card(c))]
+        newer = [c for c in have if not engines.is_legacy_card(c)]
+        have = newer or have                          # Nebula's pick on a mixed PC: a newer card, on the main build
     if not have:
         return None
     best = max(have, key=lambda c: int(c.get("memory_mb", 0)) - int(c.get("used_mb", 0)))
     return str(best.get("uuid") or best.get("index"))
 
 
+def _catalog_layout(server, a: dict, m: dict, pkg: str, binary):
+    """(a model's multi-card layout or None, its program): the first layout the main build's cards take; on a PC with an
+    older card and a newer one, when none fits there, one over both on Impulse (L) (here, or downloaded first). Cards
+    the answers name: no layout."""
+    from nebula import catalog as C, engines as E, pieces
+    if pkg != "impulse" or a.get("cards"):
+        return None, binary
+    lay = C.layout(m, legacy=E.is_legacy_program(binary))
+    if lay or not m.get("layouts") or E.is_legacy_program(binary) or not E.mixed_pc():
+        return lay, binary
+    prog = E.legacy_program(server.cfg.base_dir)
+    if E.legacy_driver_gap() or (prog is None and pieces.pin(E.LEGACY) is None):
+        return None, binary
+    lay = C.layout(m, legacy=True)
+    on = set((lay or {}).get("card", "").split(","))
+    if lay and any(E.is_legacy_card(c) for c in E.cards() if str(c.get("uuid") or c.get("index")) in on):
+        return lay, prog or E.LEGACY
+    return None, binary
+
+
+def _cards_line(a: dict) -> list:
+    """The cards the owner picked, said (nothing for Nebula's pick)."""
+    if not a.get("cards"):
+        return []
+    from nebula import engines as E
+    names = [c["name"] for c in E.cards() if {str(c.get("uuid")), str(c.get("index"))} & {str(x) for x in a["cards"]}]
+    if not names:
+        return []
+    return [f"Put it on the {names[0]}" if len(names) == 1 else "Put it on " + " and ".join(names) + ", together"]
+
+
 def _deploy_lines(server, a: dict, m: dict) -> tuple[list, list]:
     pkg, binary, why = _engine_for(server, a)
+    lay, binary = _catalog_layout(server, a, m, pkg, binary)
     here = _cached_files(server, m)
     whole = here is not None and all(f in here for f in m.get("shards") or [])
     lines = [f"Use {m['name']} from your Hugging Face cache (no download)" if whole else
              f"Download {m['name']} ({m['download_gb']:.0f} GB" + (f", {1 + len(m['shards'])} files" if m.get("shards") else "")
              + ") into Nebula's models folder",
              *_portable_lines(server, binary),
+             *_cards_line(a),
              _engine_line(server, pkg, binary) + (", reading pictures" if m.get("mmproj") else ""),
              "Send it a hello to check it answers"]
     from nebula import catalog as C
-    from nebula import engines as E
-    lay = C.layout(m, legacy=E.is_legacy_program(binary)) if pkg == "impulse" and not a.get("cards") else None
     if lay and "," in lay["card"]:
         lines.insert(2, f"Use {len(lay['card'].split(','))} cards together: {lay['about']}")
     warn = []
@@ -467,7 +570,7 @@ def _deploy_lines(server, a: dict, m: dict) -> tuple[list, list]:
                        "raises that (in .wslconfig, backed up first)." if have is not None and have < ram and E.in_wsl() else ""))
     if why and not binary:
         raise WizardError(409, why + (". The Impulse download comes with its first release; until then, put impulse-server on this "
-                                      "computer (or set NEBULA_IMPULSE_BIN) and try again." if pkg == "impulse" else "."))
+                                      "computer (or set NEBULA_IMPULSE_BIN) and try again." if pkg == "impulse" and "Impulse (L)" not in why else "."))
     if why:
         warn.append(why)
     lacks = C.fits(m, C.machine())
@@ -501,7 +604,7 @@ def _deploy_catalog(server, job, a: dict, mid: str) -> dict:
         got = hfcache.find(server.cfg, m["mtp_repo"], None, m["mtp"])
         paths[m["mtp"]] = got or job.pull_files(m["mtp_repo"], "main", [m["mtp"]])[m["mtp"]]
     paths = {**paths, **here, **{os.path.basename(f): p for f, p in here.items()}}
-    name = a.get("name") or _free_name(server, m["id"])
+    name = _wanted_name(server, a, m["id"])
     opts = {}
     if m.get("mtp") and pkg == "impulse":
         opts["mtp"] = paths[m["mtp"]]
@@ -510,8 +613,7 @@ def _deploy_catalog(server, job, a: dict, mid: str) -> dict:
     opts.update(m.get("sampling") or {})                           # the model card's sampling (Flint), shown on the Edit form
     # the cards: the ones the answers name; else a layout of the model's that this machine takes (two cards that hold it
     # all: everything on them); else the card with the most free memory
-    from nebula import engines as E
-    lay = C.layout(m, legacy=E.is_legacy_program(binary)) if pkg == "impulse" and not a.get("cards") else None
+    lay, binary = _catalog_layout(server, a, m, pkg, binary)
     if lay:
         opts.update(lay["options"])
     card = lay["card"] if lay else _cards_for(a, server, binary)
@@ -611,11 +713,11 @@ class FirstRun(Wizard):
         if src == "here":
             return _deploy_catalog(server, job, a, a["model"])
         if a.get("other") == "running":
-            name = a.get("name") or _free_name(server, "local")
+            name = _wanted_name(server, a, "local")
             job.do(f"add “{name}”", "/api/models", {"name": name, "kind": "engine", "url": a["url"]},
                    undo=("/api/models/" + name + "/remove", {}))
         else:
-            name = a.get("name") or _free_name(server, a["model"])
+            name = _wanted_name(server, a, a["model"])
             job.do(f"add “{name}”", "/api/models", {"name": name, "kind": "provider", "base_url": a["base_url"],
                                                       "model": a["model"], "api_key": a.get("api_key")},
                    undo=("/api/models/" + name + "/remove", {}))
@@ -630,6 +732,10 @@ class DeployOwn(Wizard):
             VARIANT_FIELD,
             {"key": "model", "label": "", "type": "cards", "options_from": "catalog"},
             {"key": "cached", "label": "Or one already on this computer (your Hugging Face cache): no download", "type": "select", "options_from": "hfcache"},
+            CARD_FIELD,
+            {"key": "name", "label": "Its name (blank: from the model's)", "type": "text", "placeholder": "writer",
+             "help": "what Nebula, your apps and the map call it: letters, digits, dots, dashes"},
+            {"key": "legacy", "label": "", "type": "action", "options_from": "legacy"},
             {"key": "advanced", "label": "Advanced: a model from Hugging Face, another engine", "type": "checkbox"}]},
         {"id": "fn", "title": "Qwen3.8 Flash-Next: which file?", "when": {"model": "qwen38-flashnext", "advanced": False}, "fields": [
             {"key": "fn_link", "label": "A link to a Hugging Face repository with a Qwen3.8 Flash-Next GGUF file", "type": "text",
@@ -647,17 +753,28 @@ class DeployOwn(Wizard):
     ]
 
     def defaults(self, server):
-        from nebula import catalog as C
-        return {"advanced": False, "package": "impulse", "context": 8192, "thinking": False, "variant": C.default_variant()}
+        from nebula import catalog as C, engines as E
+        return {"advanced": False, "package": "impulse", "context": 8192, "thinking": False, "variant": C.default_variant(),
+                "mixed_cards": E.mixed_pc()}
 
     def options(self, server, field, a):
         if field == "catalog":
             return _catalog_options(server, variant=a.get("variant"))
+        if field == "legacy":                                # Impulse (L), to be had here: the owner's to download
+            from nebula import engines as E
+            st = E.legacy_status(server.cfg.base_dir) or E.legacy_optional(server.cfg.base_dir)
+            if not st or st.get("here") or not st.get("offer"):
+                return []
+            return [{"label": ("Optional: " if st.get("optional") else "For your older card: ") + "Impulse (L), Nebula's engine build "
+                     "for older NVIDIA cards" + (" (your cards run the main build)" if st.get("optional") else ""), "help": "Nebula " + st["offer"],
+                     "button": "Download Impulse (L)", "post": "/api/yard/pieces/impulse-legacy"}]
         if field == "hfcache":
             return [{"value": "", "label": "none: the model picked above"}] + _cache_options(server)
         if field == "package":
             from nebula import packages as P
             return [{"value": k, "label": v["label"]} for k, v in P.PACKAGES.items()]
+        if field == "card_choice":
+            return _card_choices(server)
         if field == "vk_card":                               # Impulse portable's cards (no NVIDIA card here)
             from nebula import catalog as C
             vk = C.vulkan_cards(server.cfg.base_dir)
@@ -685,6 +802,7 @@ class DeployOwn(Wizard):
 
     def plan(self, server, a):
         from nebula import catalog as C
+        a = _with_card_choice(a)
         if not a.get("advanced") and a.get("cached"):
             return _cached_plan(server, a)
         if not a.get("advanced"):
@@ -737,6 +855,7 @@ class DeployOwn(Wizard):
                 "warnings": warn}
 
     def apply(self, server, a, job):
+        a = _with_card_choice(a)
         if not a.get("advanced") and a.get("cached"):
             return _cached_deploy(server, job, a)
         from nebula import catalog as C
@@ -757,7 +876,7 @@ class DeployOwn(Wizard):
                 pieces.fetch("impulse-flashnext", server.cfg.base_dir,
                              lambda got, total: job.steps[-1].__setitem__("progress", [got, total]))
                 job.steps[-1]["state"] = "done"
-            name = a.get("name") or _free_name(server, os.path.basename(pack["dir"].rstrip("/"))[:24])
+            name = _wanted_name(server, a, os.path.basename(pack["dir"].rstrip("/"))[:24])
             card = _cards_for(a)
             job.deploy({"name": name, "kind": "impulse", "model": pack["dir"], "context": int(a.get("context") or 32768),
                         "slots": 1, "options": {}, **({"card": card} if card else {}),
@@ -765,13 +884,13 @@ class DeployOwn(Wizard):
             return {"model": name, "test": job.test(name)}
         if pack is not None:                                   # with an image: the reference engine's way
             from nebula import yard
-            name = a.get("name") or _free_name(server, os.path.basename(pack["dir"].rstrip("/"))[:24])
+            name = _wanted_name(server, a, os.path.basename(pack["dir"].rstrip("/"))[:24])
             spec = flashnext.engine_spec(name, machine=a.get("machine"), folder=os.path.dirname(pack["dir"].rstrip("/")),
                                          files=pack, port=yard.free_port(server), cards=list(a.get("cards") or []),
                                          image=a.get("image") or flashnext.IMAGE, numa_nodes=a.get("numa_nodes"))
             job.deploy(spec)
             return {"model": name, "test": job.test(name)}
-        name = a.get("name") or _free_name(server, os.path.basename(str(a.get("quant") or a["link"])).replace(".gguf", ""))
+        name = _wanted_name(server, a, os.path.basename(str(a.get("quant") or a["link"])).replace(".gguf", ""))
         path = os.path.expanduser(str(a["link"]))
         if not os.path.isfile(path):
             path, _mm = job.pull(a["link"], a["quant"])
@@ -936,7 +1055,7 @@ def _untrust(server, host: str, port: int):
     from nebula import yard
     kh = yard._known_hosts(server)
     try:
-        lines = open(kh, encoding="utf-8").read().splitlines()
+        lines = Path(kh).read_text(encoding="utf-8").splitlines()
     except OSError:
         return
     tag = host if port == 22 else f"[{host}]:{port}"

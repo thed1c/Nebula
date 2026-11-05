@@ -145,7 +145,7 @@ def cue_route(last: str, routes: list[str]) -> str:
     return "everyday" if "everyday" in routes else routes[0]
 
 
-def ask_halo(req: dict, routes: list[str], timeout: float = 12.0) -> dict | None:
+def ask_halo(req: dict, routes: list[str], timeout: float = 12.0, words: dict | None = None) -> dict | None:
     """Halo's pick among these routes ({route, why, seconds}), or None when its own model cannot answer now."""
     own = HALO() if HALO else None
     if own is None or not own.ready():
@@ -154,7 +154,7 @@ def ask_halo(req: dict, routes: list[str], timeout: float = 12.0) -> dict | None
     msgs = [m for m in (req.get("messages") or []) if isinstance(m, dict) and m.get("role") in ("user", "assistant")]
     last = next((_text(m.get("content")) for m in reversed(msgs) if m.get("role") == "user"), "")
     before = " | ".join(_text(m.get("content"))[:200] for m in msgs[-4:-1])
-    menu = "\n".join(f"- {r}: {ROUTE_WORDS.get(r, r)}" for r in routes)
+    menu = "\n".join(f"- {r}: {(words or {}).get(r) or ROUTE_WORDS.get(r, r)}" for r in routes)
     system = ("You are Halo, the router. Pick the one route that should answer the user's last message.\nRoutes:\n" + menu +
               "\nCode, bugs and technical questions are never critique: critique is only feedback on creative writing."
               "\nAnswer only JSON: {\"route\": \"<one of: " + ", ".join(routes) + ">\", "
@@ -197,7 +197,7 @@ def ask_halo(req: dict, routes: list[str], timeout: float = 12.0) -> dict | None
         return None
 
 
-def ask_jev(req: dict, routes: list[str], timeout: float = 40.0) -> dict | None:
+def ask_jev(req: dict, routes: list[str], timeout: float = 40.0, words: dict | None = None) -> dict | None:
     """TypeSafe's Jev as the judge (off unless chosen in Routes; each judged turn's text goes to TypeSafe and costs): one typed choice among the routes, through the owner's own `jev` client and key."""
     import os
     import shutil
@@ -209,7 +209,7 @@ def ask_jev(req: dict, routes: list[str], timeout: float = 40.0) -> dict | None:
     last = next((_text(m.get("content")) for m in reversed(req.get("messages") or []) if isinstance(m, dict) and m.get("role") == "user"), "")
     payload = {"model": "jev-latest", "state": {"request": last[:4000]},
                "questions": {"route": {"type": "choice", "instructions": "Pick the route that should answer this request.",
-                                       "criteria": {r: ROUTE_WORDS.get(r, r) for r in routes}}}}
+                                       "criteria": {r: (words or {}).get(r) or ROUTE_WORDS.get(r, r) for r in routes}}}}
     t0 = time.monotonic()
     try:
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
@@ -237,13 +237,15 @@ def pick(turn, est_tokens: int, state=None) -> dict | None:
         return {"mode": st["mode"], "picked": next(iter(tiers.values())), "why": "one tier only"}
     sc, signals = score(turn.req, est_tokens, turn.rules.long_context_tokens, state)
     if st["judge"] in ("halo", "halo-own", "jev"):       # Halo (or Jev, when chosen) reads every turn and picks the route
-        routes = [r for r in ("everyday", "larger", "writing", "critique") if r in set(tiers.values())]
-        h = ask_jev(turn.req, routes) if st["judge"] == "jev" else ask_halo(turn.req, routes)
+        from nebula import route_settings
+        routes = [r for r in route_settings.names(turn.rules) if r in set(tiers.values())]
+        said = {r: route_settings.words(turn.rules, r, ROUTE_WORDS) for r in routes}
+        h = ask_jev(turn.req, routes, words=said) if st["judge"] == "jev" else ask_halo(turn.req, routes, words=said)
         if h is not None:
             out = {"mode": st["mode"], "picked": h["route"], "score": sc, "threshold": st["threshold"], "signals": signals,
                    "how": "halo" if h["model"] == "halo" else "jev", "judge": h, "why": h["why"]}
             if st["mode"] == "live":
-                first = [t for t in turn.ladder if tiers[t.name] == h["route"]]
+                first = turn.policy.order([t for t in turn.ladder if tiers[t.name] == h["route"]])    # the route's own order
                 turn.ladder = first + [t for t in turn.ladder if tiers[t.name] != h["route"]]
             return out
     unsure = abs(sc - st["threshold"]) <= st["unsure"]
@@ -262,6 +264,6 @@ def pick(turn, est_tokens: int, state=None) -> dict | None:
     out = {"mode": st["mode"], "picked": picked, "score": sc, "threshold": st["threshold"], "signals": signals, "how": how,
            "judge": verdict}
     if st["mode"] == "live":
-        first = [t for t in turn.ladder if tiers[t.name] == picked]
+        first = turn.policy.order([t for t in turn.ladder if tiers[t.name] == picked])
         turn.ladder = first + [t for t in turn.ladder if tiers[t.name] != picked]
     return out

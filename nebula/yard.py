@@ -12,6 +12,9 @@
     POST /api/yard/hf/resolve                 {url}: a Hugging Face link's GGUF choices, sizes, projector, disk and fit
     POST /api/yard/hf/pull                    {repo, revision, files}: start a download; GET /api/yard/hf/pulls follows it
     POST /api/yard/hf/pulls/<id>/cancel       pause it (pulling again resumes)
+    GET  /api/yard/library                    the model files on this computer and what loads them (nebula/library.py);
+                                              POST /api/yard/library/folders {add|remove}, /download-to {path},
+                                              /delete {path} (a model file; never one an engine names)
     POST /api/yard/hf/token                   {token}: kept in nebula-keys/huggingface.token (0600), never shown again
     GET  /api/yard/openshell                  OpenShell here: gateways, sandboxes, providers (read only)
     GET  /api/yard/openshell/profile          ?port=: the provider profile that lets a sandbox reach only this Nebula
@@ -36,6 +39,9 @@
                                               a friend's may carry the models it gets on joining; /invites/<id>/cancel
     POST /api/yard/node/join {invite}         join the Nebula that made it
     POST /api/yard/node/peers/<id>/grants {models} | /revoke | /adopt (its granted models as models here)
+    POST /api/yard/node/peers/<id>/block {on}   a blocked peer stays listed and gets nothing until unblocked
+    POST /api/yard/node/peers/<id>/limits {model, calls_per_hour?, max_output_tokens?, max_concurrent?}  limits on one
+                                              model shared with it (none given: none)
     *    /api/yard/node/peers/<id>/admin/<path>   an owner machine's /api/yard/<path>, over its admin ALPN
     GET  /api/yard/gravity                    the Gravity routers on this machine (loopback only) and the ones adopted
     POST /api/yard/gravity/adopt              {address, models}: one model per Gravity model, routed like any other
@@ -75,6 +81,10 @@ def _save(server) -> str | None:
 
 
 def models_dir(server) -> str:
+    """Where downloads go: Nebula's own models folder, or the folder picked for them on the Models page."""
+    from nebula import library
+    if (server.cfg.raw or {}).get("download_dir"):
+        return library.download_dir(server.cfg)
     cfg = server.cfg
     d = (cfg.raw or {}).get("models_dir") or "models"
     return d if os.path.isabs(d) else os.path.join(cfg.base_dir or os.getcwd(), d)
@@ -86,6 +96,7 @@ def pulls(server):
         cfg = server.cfg
         keys = names.local_path(cfg.base_dir, "nebula-keys", "cockpit-keys") if cfg.path else None
         server.pulls = hf.Pulls(models_dir(server), os.path.join(keys, "huggingface.token") if keys else None)
+    server.pulls.models_dir = models_dir(server)          # the folder picked for downloads may have changed
     return server.pulls
 
 
@@ -113,6 +124,19 @@ def free_port(server, start: int = 18300) -> int:
     raise YardError(503, "no free port")
 
 
+def _here(server) -> dict:
+    """This computer, as the Machines list shows it: its name, its address on your network and Nebula's port."""
+    import socket
+    addr = None
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as u:   # a route lookup only: a UDP connect sends nothing
+            u.connect(("192.0.2.1", 9))
+            addr = u.getsockname()[0]
+    except OSError:
+        pass
+    return {"name": socket.gethostname().split(".")[0], "address": addr, "port": getattr(server, "server_port", None)}
+
+
 def get(server, path: str, query: str = "") -> dict | None:
     yard = getattr(server, "yard", None)
     if yard is None:
@@ -136,6 +160,8 @@ def get(server, path: str, query: str = "") -> dict | None:
         try:
             if path == "/api/yard/openshell":
                 return openshell.panel()
+            if path == "/api/yard/openshell/machines":      # each gateway's sandboxes, for the Machines list
+                return openshell.by_gateway()
             if path == "/api/yard/openshell/profile":
                 port = server.server_port
                 return {"profile": openshell.profile(port), "steps": openshell.provider_steps(port),
@@ -144,8 +170,10 @@ def get(server, path: str, query: str = "") -> dict | None:
                 return openshell.policy(path[len("/api/yard/openshell/sandboxes/"):-len("/policy")])
         except openshell.OpenShellError as e:
             raise YardError(503, str(e)) from None
-    if path == "/api/yard/servers":
-        return {"servers": list(server.cfg.raw.get("servers") or [])}
+    if path == "/api/yard/servers":                 # the machines: this computer, and each model machine and whether it answers
+        from nebula import machines
+        return {"servers": [{**r, "seen": machines.seen(r.get("name"))} for r in server.cfg.raw.get("servers") or []],
+                "here": _here(server)}
     if path == "/api/yard/network":
         n = getattr(server, "network", None)
         return n.view() if n is not None else {"on": False, "role": (server.cfg.raw.get("network") or {}).get("role")}
@@ -153,7 +181,10 @@ def get(server, path: str, query: str = "") -> dict | None:
         from nebula import gravity
         return {"models": [{"name": t.name, "shared": bool(getattr(t, "shared", False)), "anti_gravity": gravity.anti_gravity(t),
                             "needs_care": gravity.needs_care(t, getattr(server, "yard", None)), "not_guaranteed_safe": bool(getattr(t, "not_guaranteed_safe", False)),
-                            "mesh": getattr(t, "mesh", None)} for t in server.cfg.tiers]}
+                            "mesh": getattr(t, "mesh", None),
+                            "peer": (t.engine or "").rsplit("/peer/", 1)[-1] if getattr(t, "mesh", None) == "gravity-peer" and "/peer/" in (t.engine or "") else None,
+                            "remote": t.model if getattr(t, "mesh", None) == "gravity-peer" else None}
+                           for t in server.cfg.tiers]}
     if path == "/api/yard/node":
         g = getattr(server, "gravity", None)
         if g is None:
@@ -174,18 +205,26 @@ def get(server, path: str, query: str = "") -> dict | None:
     if path == "/api/yard/callers":
         from nebula import callers
         return {"callers": callers.view(server.cfg), "classes": list(callers.CLASSES), "models": [t.name for t in server.cfg.tiers]}
+    if path == "/api/yard/library":
+        from nebula import library
+        return library.view(server.cfg, yard.status(), pulls(server).status())
     if path == "/api/yard/hf/pulls":
         return {"pulls": pulls(server).status(), "models_dir": models_dir(server), "token": bool(pulls(server).token())}
     if path == "/api/yard/engines":
         from nebula import machines
         bd = server.cfg.base_dir
 
+        leg = E.legacy_status(bd) or E.legacy_optional(bd)      # an older card's need, or anyone's choice
+
         def old(c):                                   # Impulse cannot use it: said, greyed out (an older card: Impulse (L))
             why = E.card_too_old(c, bd, driver=not c.get("machine"))
+            if why and not c.get("machine") and E.is_legacy_card(c) and leg and leg.get("offer") and not leg.get("optional"):
+                return {"needs_legacy": E.card_too_old_short(c, bd)}   # choosable: Impulse (L) is downloaded first, below
             return {"too_old": why, "too_old_short": E.card_too_old_short(c, bd, driver=not c.get("machine"))} if why else {}
         cards = [{**c, **old(c)} for c in E.cards() + machines.cards(server.cfg)]
         return {"engines": yard.status(), "cards": cards, "kinds": list(E.KINDS),
-                "cache_types": list(E.CACHE_BYTES), "machines": [s["name"] for s in server.cfg.raw.get("servers") or [] if s.get("gateway")]}
+                "cache_types": list(E.CACHE_BYTES), "machines": [s["name"] for s in server.cfg.raw.get("servers") or [] if s.get("gateway")],
+                **({"legacy": {**leg, **legacy_fetch_state()}} if leg else {})}
     if path.startswith("/api/yard/engines/"):
         name = path[len("/api/yard/engines/"):].strip("/")
         try:
@@ -195,12 +234,48 @@ def get(server, path: str, query: str = "") -> dict | None:
     return None
 
 
+_LEGACY_FETCH: dict = {}   # Impulse (L)'s download from the Engines page: {"state", "progress", "error"}
+
+
+def legacy_fetch_state() -> dict:
+    return {"fetch": dict(_LEGACY_FETCH)} if _LEGACY_FETCH else {}
+
+
+def legacy_fetch(server) -> dict:
+    """Impulse (L) downloaded in the background, on the owner's click on the Engines page (pinned, sha256 checked); its
+    state in /api/yard/engines' "legacy"."""
+    import threading
+    from nebula import pieces
+    st = E.legacy_status(server.cfg.base_dir) or E.legacy_optional(server.cfg.base_dir)
+    if not st:
+        raise YardError(409, "this computer has no NVIDIA card: Impulse (L) cannot run here")
+    if st["here"]:
+        return {"legacy": st}
+    if not st.get("offer"):
+        raise YardError(409, st.get("why") or "Impulse (L) cannot be downloaded here")
+    if _LEGACY_FETCH.get("state") == "downloading":
+        return {"legacy": {**st, **legacy_fetch_state()}}
+    _LEGACY_FETCH.clear()
+    _LEGACY_FETCH.update(state="downloading", progress=None)
+
+    def run():
+        try:
+            pieces.fetch(E.LEGACY, server.cfg.base_dir, lambda got, total: _LEGACY_FETCH.__setitem__("progress", [got, total]))
+            _LEGACY_FETCH.update(state="done")
+        except Exception as e:  # noqa: BLE001 - said on the page
+            _LEGACY_FETCH.update(state="failed", error=str(e)[:300])
+    threading.Thread(target=run, name="impulse-legacy-fetch", daemon=True).start()
+    return {"legacy": {**st, **legacy_fetch_state()}}
+
+
 def post(server, path: str, req: dict) -> dict | None:
     yard = getattr(server, "yard", None)
     if yard is None:
         return None
     from nebula import callers, hf, power
     try:
+        if path == "/api/yard/pieces/impulse-legacy":
+            return legacy_fetch(server)
         if path.startswith("/api/yard/openshell/sandboxes/") and path.endswith("/delete"):
             from nebula import openshell
             name = path[len("/api/yard/openshell/sandboxes/"):-len("/delete")]
@@ -277,6 +352,25 @@ def post(server, path: str, req: dict) -> dict | None:
             return pulls(server).status(pid)
         if path.startswith("/api/yard/hf/pulls/") and path.endswith("/cancel"):
             return pulls(server).cancel(path[len("/api/yard/hf/pulls/"):-len("/cancel")])
+        if path == "/api/yard/library/delete":
+            from nebula import library
+            try:
+                return library.delete_file(server.cfg, str(req.get("path") or ""), yard.status())
+            except library.LibraryError as e:
+                raise YardError(e.status, str(e)) from None
+        if path in ("/api/yard/library/folders", "/api/yard/library/download-to"):
+            from nebula import library
+            try:
+                if path.endswith("/download-to"):
+                    out = {"download_dir": library.set_download_dir(server.cfg, str(req.get("path") or ""))}
+                elif req.get("remove"):
+                    out = {"model_dirs": library.remove_folder(server.cfg, str(req["remove"]))}
+                else:
+                    out = {"model_dirs": library.add_folder(server.cfg, str(req.get("add") or ""))}
+            except library.LibraryError as e:
+                raise YardError(e.status, str(e)) from None
+            pulls(server)
+            return {**out, "saved": _save(server)}
         if path == "/api/yard/hf/token":
             return {"saved": pulls(server).set_token(req.get("token") or None)}
         if path == "/api/yard/deploy":
@@ -362,12 +456,14 @@ def node_post(server, path: str, req: dict) -> dict:
             _save(server)
             g.close()
             server.gravity = gravity.GravityNode(server).start()       # a new endpoint with the new relays
+            server.gravity.seen = dict(getattr(g, "seen", None) or {})   # its peers as last seen, until it looks again
             return server.gravity.view()
         if path == "/api/yard/node/public-relay":                   # iroh's public relays: on the owner's word only
             g.section()["public_relay"] = bool(req.get("on"))
             _save(server)
             g.close()
             server.gravity = gravity.GravityNode(server).start()       # a new endpoint with the new relay mode
+            server.gravity.seen = dict(getattr(g, "seen", None) or {})   # its peers as last seen, until it looks again
             return server.gravity.view()
         if path.startswith("/api/yard/node/models/") and path.endswith("/risky"):
             t = server.cfg.tier(path[len("/api/yard/node/models/"):-len("/risky")])
@@ -404,8 +500,12 @@ def node_post(server, path: str, req: dict) -> dict:
                     if getattr(e, "needs_confirm", None):
                         return {"needs_confirm": e.needs_confirm, "warning": str(e), "granted": False}
                     raise
+            if action == "limits":                     # the limits on one model shared with this peer
+                return g.set_limits(pid, str(req.get("model") or ""), req)
             if action == "revoke":
                 return {"revoked": g.revoke(pid)}
+            if action == "block":                      # {on: true|false}: block a peer, or let it back
+                return {"peer": g.block(pid, req.get("on", True) is not False)}
             if action == "adopt":
                 return g.adopt(pid)
         raise YardError(404, f"no such path: {path}")

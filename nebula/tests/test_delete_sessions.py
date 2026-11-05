@@ -102,6 +102,19 @@ class DeleteSessionsTest(unittest.TestCase):
         self.assertEqual((status, json.loads(raw)["deleted"]), (200, [a]))
         self.assertEqual(set(self.rows(a).values()), {0})
 
+    def test_api_calls_are_in_the_ledger_not_among_your_chats(self):
+        """The Chats box showed every API caller's conversation (a pipeline's dozens): it shows the page's own only."""
+        mine = self.chat("hello")
+        status, _h, raw = req(self.base, "/v1/chat/completions", {"model": "auto", "messages": [{"role": "user", "content": "from an app"}]})
+        self.assertEqual(status, 200, raw)
+        rows = {s["session_id"]: s["origin"] for s in json.loads(req(self.base, "/api/sessions")[2])}
+        self.assertEqual(rows[mine], "page")
+        self.assertEqual(sorted(o for sid, o in rows.items() if sid != mine), ["chat"])         # the API's, still in the ledger
+        html = PAGE.read_text()
+        self.assertIn('const userChat = (s) => s.origin === "page" || s.key_source === "halo-alert";', html)
+        self.assertIn('list = (await api("/api/sessions")).filter(userChat)', html)
+        self.assertNotIn("deleteSessions({ all: true }", html)                               # Clear… deletes your chats only
+
     def test_the_page_asks_first(self):
         html = PAGE.read_text()
         for want in ('class="sdel" data-del=', 'data-delclosed="1"', 'data-delall="1"', 'id="del"', 'if (!confirm(question)) return;',

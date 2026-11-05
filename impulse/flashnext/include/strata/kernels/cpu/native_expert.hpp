@@ -15,12 +15,12 @@ namespace strata::kernels::cpu {
 
 /// Bytes of the largest quantized activation any native layer uses (2560 values as Q8_K: 10 x 292).
 inline constexpr size_t kNativeActBytes = 4096;
-/// Bytes of the largest quantized down activation (640 values as Q8_0: 20 x 34, or Q8_K 3 x 292; Impulse's LFM2.5 has
-/// 1536 values as Q8_0, 48 x 34 = 1632).
-inline constexpr size_t kNativeHBytes = 2048;
-/// Impulse (Strata-Lite): the widest expert FFN a native layer may have (Qwen3.8 640, Gemma 4 704, LFM2.5 1536); the
-/// pool's buffers.
-inline constexpr int kNativeMaxFF = 1536;
+/// Bytes of the largest quantized down activation (640 values as Q8_0: 20 x 34, or Q8_K 3 x 292; Impulse's LFM2.5-24B has
+/// 1536 values as Q8_0, 48 x 34 = 1632; LFM2.5-8B 1792 as Q8_K, 7 x 292 = 2044; kNativeMaxFF's 2048 as Q8_K, 8 x 292 = 2336).
+inline constexpr size_t kNativeHBytes = 4096;
+/// Impulse (Strata-Lite): the widest expert FFN a native layer may have (Qwen3.8 640, Gemma 4 704, LFM2.5-24B 1536,
+/// LFM2.5-8B 1792); the pool's buffers.
+inline constexpr int kNativeMaxFF = 2048;
 
 /// The expert's gated activation.  SwiGLU is Strata's own (its packs, the fork's NVFP4 packs); the other two are
 /// Impulse's engines, which must round exactly as llama.cpp's CPU backend.

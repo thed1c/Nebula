@@ -111,15 +111,19 @@ class Engine:
             return e.status, "application/json", json.dumps(e.body).encode("utf-8")
 
     def props(self) -> dict:
-        """The engine's /props, read once; {} for a provider or an engine that has none."""
+        """The engine's /props, read once it answers; {} for a provider or an engine that has none. A read that failed
+        (the engine still starting, a timeout) is tried again next time instead of being kept for good."""
         if self._props is None:
             status, _ctype, data = self.get("/props")
             try:
-                self._props = json.loads(data) if status == 200 else {}
+                got = json.loads(data) if status == 200 else None
             except ValueError:
-                self._props = {}
-            if not isinstance(self._props, dict):
-                self._props = {}
+                got = {}                        # it answers, but with no props of its own: kept
+            if status == 200:
+                self._props = got if isinstance(got, dict) else {}
+            elif status == 404:
+                self._props = {}                # a provider (or an engine) with no /props: kept
+            return self._props if self._props is not None else {}
         return self._props
 
     def n_ctx(self) -> int | None:

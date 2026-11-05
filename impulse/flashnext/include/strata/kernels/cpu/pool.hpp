@@ -326,7 +326,7 @@ private:
     ExpertJobMulti* mjobs_ = nullptr;
     int64_t mrows_ = 0;     // rows of the current multi phase across all its experts (n * FF, then n * H)
     int mtasks_ = 1;        // equal row ranges the phase is cut into
-    static constexpr int kPoolFF = FF > kNativeMaxFF ? FF : kNativeMaxFF;   // Impulse: gemma4's 704, LFM2.5's 1536-wide experts
+    static constexpr int kPoolFF = FF > kNativeMaxFF ? FF : kNativeMaxFF;   // Impulse: gemma4's 704, LFM2.5's 1536- and 1792-wide experts
     struct SplitBufMulti {
         alignas(64) float ff[MAXT][kPoolFF];
         ActQ a2[MAXT];

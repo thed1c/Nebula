@@ -96,5 +96,28 @@ class FaceTest(unittest.TestCase):
         self.assertEqual(self.last_tenant(), "owner")                                     # a bad signature is not a tenant
 
 
+class MembersTest(unittest.TestCase):
+    def test_this_machine_is_marked_so_the_page_does_not_show_it_twice(self):
+        from types import SimpleNamespace
+        from nebula.network import Network
+
+        class Broker:
+            calls = 0
+
+            def call(self, method, params=None, timeout=None):
+                Broker.calls += method == "cluster:get-node-id"
+                if method == "cluster:get-node-id":
+                    return {"nodeId": "here", "clusterId": "c"}
+                return {"nodes": [{"id": "here", "nodeUuid": "u1", "state": "member"},
+                                  {"id": "box", "nodeUuid": "u2", "state": "member"}]}
+
+        n = Network(SimpleNamespace(cfg=SimpleNamespace(raw={})))
+        n.broker = Broker()
+        got = {m["id"]: m.get("self", False) for m in n.members()}
+        self.assertEqual(got, {"here": True, "box": False})
+        n.members()
+        self.assertEqual(Broker.calls, 1)                    # asked once
+
+
 if __name__ == "__main__":
     unittest.main()

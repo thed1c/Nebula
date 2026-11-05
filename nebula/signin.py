@@ -11,6 +11,9 @@
   key (P-256, ES256) and checks each sign-in's signature, its challenge (used once, two minutes), the page's origin and
   that the person was verified (fingerprint, face, device PIN). A passkey needs a name for this machine, not an
   address: the page offers it at http://localhost:<port>, not at http://127.0.0.1:<port>.
+- **No PIN on this computer** (`"open_here": true`, the owner's choice in System › Sign-in): the page opens without
+  signing in when it is opened on this computer itself (a loopback address); any other device still signs in, and
+  the other sites' pages are still refused (nebula/origin.py). Turning it on or off is in the security log.
 - **Nebula's own callers** (Gravity's owner link, the household link, `nebula invite` on this machine) carry the
   server's internal token instead (`X-Nebula-Internal`; the file nebula-keys/admin.token, readable by its owner only).
 """
@@ -233,12 +236,38 @@ class SignIn:
                 self.sessions.pop(hashlib.sha256(t.encode()).hexdigest(), None)
         return f"{self.cookie_name()}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
 
+    def open_here(self, addr: str | None, headers=None) -> bool:
+        """The owner chose no PIN on this computer, and the request comes from this computer itself: not one forwarded
+        for a peer (X-Nebula-From) and not one carrying a token of its own (a sandboxed CLI's, a paired machine's)."""
+        from nebula import lan, names
+        if not (self.section().get("open_here") and addr and lan.is_loopback(addr)):
+            return False
+        if headers is not None and (names.header(headers, "From") or names.header(headers, "Token")
+                                    or (headers.get("Authorization") or "").lower().startswith("bearer ")):
+            return False
+        return True
+
     def may_change(self, headers, addr: str) -> bool:
-        """Setting a PIN or adding a passkey: the first one from this machine; later ones only when signed in."""
+        """Setting a PIN or adding a passkey: the first one from this machine; later ones only when signed in (or on
+        this computer, when the owner chose no PIN here)."""
         from nebula import lan
         if not self.configured():
             return lan.is_loopback(addr)
-        return self.signed_in(headers)
+        return self.signed_in(headers) or self.open_here(addr, headers)
+
+    def set_open_here(self, on: bool, headers, addr: str) -> dict:
+        """No PIN on this computer, on or off: signed in (or already open here, or nothing set yet on this computer)."""
+        from nebula import lan
+        if not (self.signed_in(headers) or self.open_here(addr, headers) or (not self.configured() and lan.is_loopback(addr))):
+            raise SignInError(401, "sign in first")
+        s = dict(self.section())
+        if on:
+            s["open_here"] = True
+        else:
+            s.pop("open_here", None)
+        self._save(s)
+        self._log("signin.changed", addr, "no PIN on this computer" if on else "the PIN is asked on this computer again")
+        return {"open_here": bool(on)}
 
     # --- the PIN
     def _throttle(self, addr: str) -> None:
@@ -410,8 +439,8 @@ class SignIn:
         self._log("signin.ok", addr, "passkey", name=key.get("name"))
         return self._session()[1]
 
-    def remove_passkey(self, kid: str, headers) -> dict:
-        if not self.signed_in(headers):
+    def remove_passkey(self, kid: str, headers, addr: str | None = None) -> dict:
+        if not (self.signed_in(headers) or self.open_here(addr, headers)):
             raise SignInError(401, "sign in first")
         s = self.section()
         left = [k for k in s.get("passkeys") or [] if k["id"] != kid]
@@ -420,10 +449,12 @@ class SignIn:
         self._save(dict(s, passkeys=left))
         return {"removed": kid}
 
-    def view(self, headers) -> dict:
+    def view(self, headers, addr: str | None = None) -> dict:
+        from nebula import lan
         s = self.section()
         rp = self.rp_of(headers.get("Host"))
-        return {"configured": self.configured(), "signed_in": self.signed_in(headers), "pin": bool(s.get("pin")),
+        return {"configured": self.configured(), "signed_in": self.signed_in(headers) or self.open_here(addr, headers), "pin": bool(s.get("pin")),
+                "open_here": bool(s.get("open_here")), "here": bool(addr) and lan.is_loopback(addr),
                 "passkeys": [{"id": k["id"], "name": k.get("name"), "added": k.get("added"), "used": k.get("used"), "here": k.get("rp") == rp}
                              for k in s.get("passkeys") or []],
                 "passkey_here": rp is not None, "localhost": f"http://localhost:{self.server.server_port}/"}
@@ -435,7 +466,7 @@ def handle(server, method: str, path: str, req: dict, headers, addr: str):
     si = server.signin
     try:
         if method == "GET" and path == "/api/signin":
-            return 200, si.view(headers), None
+            return 200, si.view(headers, addr), None
         if method == "GET" and path == "/api/signin/passkey/create":
             return 200, si.create_options(headers, addr), None
         if method == "GET" and path == "/api/signin/passkey":
@@ -451,7 +482,9 @@ def handle(server, method: str, path: str, req: dict, headers, addr: str):
         if method == "POST" and path == "/api/signin/passkey":
             return 200, {"signed_in": True}, si.sign_in_passkey(req, headers, addr)
         if method == "POST" and path.startswith("/api/signin/passkeys/") and path.endswith("/remove"):
-            return 200, si.remove_passkey(path[len("/api/signin/passkeys/"):-len("/remove")], headers), None
+            return 200, si.remove_passkey(path[len("/api/signin/passkeys/"):-len("/remove")], headers, addr), None
+        if method == "POST" and path == "/api/signin/open":
+            return 200, si.set_open_here(bool(req.get("on")), headers, addr), None
         if method == "POST" and path == "/api/signin/out":
             return 200, {"signed_in": False}, si.sign_out(headers)
     except SignInError as e:

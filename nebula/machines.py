@@ -25,6 +25,14 @@ from nebula import openshell
 
 _CARDS: dict[str, tuple[float, list]] = {}
 _CARDS_LOCK = threading.Lock()
+_SEEN: dict[str, dict] = {}                        # machine name -> {"ok", "at", "error"}: its last card reading
+
+
+def seen(name: str) -> dict | None:
+    """Whether the machine answered its last card reading (over SSH), when, and why not."""
+    with _CARDS_LOCK:
+        v = _SEEN.get(name)
+        return dict(v) if v else None
 
 
 def row(cfg, name: str) -> dict:
@@ -54,10 +62,13 @@ def cards(cfg, max_age_s: float = 10.0) -> list[dict]:
                 have = [{"uuid": c["uuid"], "index": c["index"], "name": c["name"], "memory_mb": c["memory_total_mib"],
                          "used_mb": c["memory_used_mib"], "compute_cap": c.get("compute_cap"), "machine": r["name"]}
                         for c in sshinstall.gpus(target(cfg, r))]
-            except sshinstall.SshError:
+                ok, err = True, None
+            except sshinstall.SshError as e:
                 have = [dict(c, unreachable=True) for c in have]
+                ok, err = False, str(e).strip().splitlines()[-1][:200] if str(e).strip() else "no answer"
             with _CARDS_LOCK:
                 _CARDS[r["name"]] = (time.time(), have)
+                _SEEN[r["name"]] = {"ok": ok, "at": time.time(), "error": err}
         out += have
     return out
 

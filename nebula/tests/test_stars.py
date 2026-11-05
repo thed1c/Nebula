@@ -91,6 +91,19 @@ class RouterTierTest(unittest.TestCase):
         self.assertEqual(p["headers"]["X-Caller"], "nebula.assistant")
         self.assertIn("You are Halo", p["body"]["messages"][0]["content"])   # the built-in agent's prompt
 
+    def test_halo_soul_goes_first_then_its_instructions(self):
+        st, raw = call(self.rig.base, "/api/stars/assistant", {"soul": "You are warm and dry-witted.", "system": "Answer in one line."})
+        self.assertEqual(st, 200, raw)
+        a = json.loads(raw)["stars"]["assistant"]
+        self.assertEqual((a["soul"], a["system"]), ("You are warm and dry-witted.", "Answer in one line."))
+        call(self.rig.base, "/api/chat", {"text": "hello"})
+        sysmsg = self.rig.router.posts()[-1]["body"]["messages"][0]["content"]
+        self.assertTrue(sysmsg.startswith("You are warm and dry-witted.\n\nAnswer in one line."), sysmsg)
+        self.assertEqual(self.rig.saved()["assistant"]["soul"], "You are warm and dry-witted.")
+        call(self.rig.base, "/api/stars/assistant", {"soul": "", "system": ""})       # empty: the built-in prompt again
+        call(self.rig.base, "/api/chat", {"text": "hello"})
+        self.assertIn("You are Halo", self.rig.router.posts()[-1]["body"]["messages"][0]["content"])
+
     def test_a_dedicated_model_by_name_and_the_choices(self):
         v = json.loads(call(self.rig.base, "/api/stars")[1])
         self.assertIn({"tier": "router", "model": "big-model", "label": "router › big-model"}, v["api"]["choices"])

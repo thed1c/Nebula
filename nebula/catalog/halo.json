@@ -95,6 +95,69 @@
     "Impulse"
    ],
    "why": "Halo v2 on LFM2.5-1.2B: the model for Impulse portable (a Radeon or another card through Vulkan, or the CPU without an NVIDIA card) and llama-server, and the fallback on an NVIDIA machine while LFM3 is not here"
+  },
+  {
+   "id": "halo-omni-2b",
+   "name": "Halo Omni (LFM3-Omni 2B)",
+   "maker": "Liquid AI (adapters by Nebula)",
+   "why": "Halo Omni v1 on LFM3-Omni-2B, by your choice: it hands work to a team more often when a team should do it, and guards a little less surely than Halo v3.1 (322 of 330 test looks against 329); pictures and sound are not used yet",
+   "choice": true,
+   "piece": "halo-omni",
+   "base": {
+    "repo": "LiquidAI/LFM3-Omni-2B-GGUF",
+    "revision": "3d29af2ad166f8299c2d820937e47dc0add20ffc",
+    "file": "LFM3-Omni-2B-Q4_0.gguf",
+    "sha256": "6d2273a383b92dd7c5db0eb4c8dfeae13e805b485a6621c4b391ae179c2b5f28",
+    "bytes": 1049617920,
+    "fix": {
+     "why": "its chat template's carry.items clashes with the template engine's built-in items (tool calls fail with HTTP 400): renamed carry.parts in a copy, every other byte the same",
+     "replace": [
+      [
+       "namespace(items=[])",
+       "namespace(parts=[])"
+      ],
+      [
+       "carry.items",
+       "carry.parts"
+      ]
+     ],
+     "sha256": "c436d96cdf2d6af50f6e7455fe3462af59186c7f021f731d3909e05f592fc756"
+    }
+   },
+   "adapters": {
+    "halo": {
+     "file": "halo-omni-v1-r16-lora-f16.gguf",
+     "sha256": "fa6f8240055685285a53b36339703b558aa878920872584fe309283ca55f4123",
+     "bytes": 32959040,
+     "scale": 1.0
+    },
+    "uncensored": {
+     "file": "halo-omni-v1-uncensored-f16.gguf",
+     "sha256": "20f6cc6a2b915163c05a9f7c9171fda71599ef88c7e36f718b279af4061e2c3c",
+     "bytes": 452672,
+     "scale": {
+      "standard": 0.0,
+      "uncensored": 1.0
+     }
+    }
+   },
+   "server": {
+    "context": 32768,
+    "slots": 4,
+    "router_lane": {
+     "slots": 1,
+     "context": 4096
+    },
+    "gpu_mb": 1800,
+    "cpu_threads": 4,
+    "flags": [
+     "--reasoning",
+     "off"
+    ]
+   },
+   "runtimes": [
+    "Impulse"
+   ]
   }
  ]
 }

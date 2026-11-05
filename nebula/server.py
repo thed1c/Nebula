@@ -12,6 +12,7 @@ with a 200 and an error inside the stream.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 import logging
 import os
@@ -59,6 +60,18 @@ def error_shape(dialect: str, status: int, message: str, param=None, code=None) 
 
 class Handler(BaseHTTPRequestHandler):
     server_version = f"nebula/{__version__}"
+
+    timeout = 300                               # a client that stops sending mid-request frees its thread (seconds per read)
+
+    def _bad_length(self) -> bool:
+        """A Content-Length that is not a whole number of bytes (-1, "abc") is refused at once: read(-1) waits for the
+        client to hang up, and the sign-in route answers anyone before they sign in. True when refused."""
+        v = self.headers.get("Content-Length")
+        if v is None or re.fullmatch(r"[0-9]{1,15}", str(v).strip()):   # ASCII digits only (not "²"), and a sane length
+            return False
+        self.close_connection = True
+        self._json(400, error_shape("chat", 400, "the Content-Length header is not a whole number of bytes"))
+        return True
 
     def log_message(self, fmt, *args):
         LOG.info("%s " + fmt, self.address_string(), *args)
@@ -144,7 +157,7 @@ class Handler(BaseHTTPRequestHandler):
                        if (who or label) else None,
                        mode=(who or {}).get("mode"), power=self.server.power, slots=self.server.slots,
                        seclog=getattr(self.server, "seclog", None), guard=getattr(self.server, "guard", None),
-                       otel=getattr(self.server, "otel", None))
+                       otel=getattr(self.server, "otel", None), library=getattr(self.server, "library", None))
 
     # --- the security log (nebula/seclog.py): refusals and key use, never a key itself
     def _addr(self) -> str:
@@ -205,7 +218,8 @@ class Handler(BaseHTTPRequestHandler):
             status, body, cookie = signin.handle(self.server, method, path, req if isinstance(req, dict) else {}, self.headers, self._addr())
             self._json(status, body, {"Set-Cookie": cookie, "Cache-Control": "no-store"} if cookie else {"Cache-Control": "no-store"})
             return True
-        if path.startswith("/api/") and si.configured() and not self._internal() and not si.signed_in(self.headers):
+        if path.startswith("/api/") and si.configured() and not self._internal() and not si.signed_in(self.headers) \
+                and not si.open_here(self._addr(), self.headers):                # the owner chose no PIN on this computer itself
             self._refused("auth.signin", path)
             self._json(401, {"error": {"message": "sign in to this Nebula first", "code": "signin"}})
             return True
@@ -300,6 +314,8 @@ class Handler(BaseHTTPRequestHandler):
     # --- POST
     def do_POST(self):
         path = self.path.split("?", 1)[0]
+        if self._bad_length():
+            return None
         if not self._origin_ok("POST", path):
             return None
         if self._signin("POST", path):
@@ -506,6 +522,8 @@ class EntryHandler(Handler):
 
     def do_POST(self):
         path = self.path.split("?", 1)[0]
+        if self._bad_length():
+            return None
         if not self._gate(path):
             return None
         import io
@@ -597,6 +615,7 @@ class Server(ThreadingHTTPServer):
     wizards = None                               # nebula.wizards.Wizards: the guided flows and their jobs
     entries = None                               # nebula.entries.Entries: the API Server's entry points
     otel = None                                  # nebula.otel.Exporter: OpenTelemetry, off unless turned on
+    syslog = None                                # nebula.syslogfwd.Forwarder: logs to a syslog server, off unless turned on
     updates = None                               # nebula.updates.Updates: a newer Nebula, looked for only when the owner chose so
     library_why = None                           # why there is none
     gravity = None                               # nebula.gravity.GravityNode: Nebula to Nebula over iroh, when on
@@ -606,6 +625,7 @@ class Server(ThreadingHTTPServer):
     beacon = None
     pairing = None
     node = None
+    keep_engines = False                         # closing for a restart (SIGTERM): the engines keep running
 
     def handle_error(self, request, client_address):
         import sys
@@ -616,6 +636,11 @@ class Server(ThreadingHTTPServer):
         LOG.error("a request from %s failed", client_address[0], exc_info=True)
 
     def server_close(self):
+        # first of all: Starweave's team tasks and work items finish or are marked stopped while the ledger is open
+        # (an answer that came after the close was lost, and its item stayed "running" for ever)
+        from nebula import teamtasks as _teamtasks, teamwork as _teamwork
+        _teamtasks.shutdown(self)
+        _teamwork.shutdown(getattr(self, "ledger", None))
         if self.halo is not None:                    # first: it reads the security log the close below shuts
             self.halo.close()
         if getattr(self, "halo_engine", None) is not None:
@@ -624,8 +649,8 @@ class Server(ThreadingHTTPServer):
             self.network.close()
         if self.gravity is not None:
             self.gravity.close()
-        if self.yard is not None:
-            self.yard.close()
+        if self.yard is not None and not self.keep_engines:
+            self.yard.close()                    # stops the engines it started (Ctrl+C); a window close leaves them up
         if self.watch is not None:
             self.watch.close()
         for f in self.followers:
@@ -656,6 +681,8 @@ class Server(ThreadingHTTPServer):
             self.entries.close()
         if self.otel is not None:
             self.otel.close()
+        if self.syslog is not None:
+            self.syslog.close()
         if self.updates is not None:
             self.updates.close()
 
@@ -677,7 +704,7 @@ def reload_models(srv) -> None:
     model. The ledger, the tools and the schedules are untouched."""
     cfg = srv.cfg
     from nebula.commands import CommandEngine
-    srv.engines = {t.name: (CommandEngine(t, cfg.engine_timeout_s, cfg.base_dir) if t.is_command
+    srv.engines = {t.name: (CommandEngine(t, float(t.timeout_s or cfg.engine_timeout_s), cfg.base_dir) if t.is_command
                             else Engine(t.address, float(t.timeout_s or cfg.engine_timeout_s), model=t.model, context=t.context, api_key=tier_key(t),
                                         health_path=t.health_path,
                                         sign_secret=(cfg.raw.get("network") or {}).get("secret") if getattr(t, "mesh", None) == "network" else None,
@@ -765,6 +792,10 @@ def make_server(cfg) -> Server:
         srv.server_close()
         raise
     srv.ledger = Ledger(cfg.ledger, cfg.tenant) if cfg.ledger else None
+    if srv.ledger is not None:                      # Starweave's detached runs that outlived the last Nebula
+        from nebula import teamtasks as _teamtasks, teamwork as _teamwork
+        _teamwork.recover(srv)
+        _teamtasks.recover(srv)
     srv.seclog = seclog.SecLog(seclog.path_for(cfg.ledger))       # beside the ledger (in memory without one)
     import secrets as _secrets
     srv.internal_token = _secrets.token_urlsafe(32)   # Nebula's own callers (Gravity, the household link, its commands)
@@ -775,6 +806,8 @@ def make_server(cfg) -> Server:
         LOG.warning("the admin token file was not written: %s", e)
     from nebula.otel import Exporter
     srv.otel = Exporter(cfg, (cfg.lan or {}).get("uuid"))          # sends nothing unless "otel" is turned on
+    from nebula.syslogfwd import Forwarder
+    srv.syslog = Forwarder(cfg, srv.seclog)                        # sends nothing unless "syslog" is turned on
     srv.telemetry = ui.start_telemetry() if cfg.monitor else None
     stars.ensure_builtins(cfg)                      # the Lookup star's two built-in servers, listed (off)
     srv.library = lookup_library(srv)              # Lookup's library (nebula/rag): collections, search with citations

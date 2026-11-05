@@ -18,7 +18,13 @@ is the fix, and `key_source` says which was used.
 Event kinds: message (a client's turn), reply (an engine's), request (the boundary: the transcript's hash the
 attempt was sent), rewind, briefing (a structured compaction; the next packet starts from it), handoff (a packet
 sent to another tier), lifecycle (closed or reopened: explicit, by the user, or by a client that kept writing),
-tool_round (an agent's tools run by the cockpit, outside the transcript a client sees).
+tool_round (an agent's tools run by the cockpit, outside the transcript a client sees), team_action (a Starweave
+team call and Halo's ruling on it, nebula/team.py; outside the transcript too), team_note (a team member's note, the
+task's shared memory).
+
+Starweave's work items (`work_items`) are the parts of a task the lead gave to teammates. Each runs as an ordinary
+turn in a child session of its own (key `team:<item_id>`, key_source "team"), so it never mixes into the
+conversation; the lists leave those sessions out and the lead's session view shows its items instead.
 """
 from __future__ import annotations
 
@@ -81,9 +87,103 @@ def _agent_column(db) -> None:
         db.execute("ALTER TABLE attempts ADD COLUMN agent TEXT")       # a ledger from before agents
 
 
-STEPS = [SCHEMA, _agent_column]         # nebula/migrate.py: one more step for each change, never an edited one
+WORK_ITEMS = """
+CREATE TABLE IF NOT EXISTS work_items (
+  item_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, parent_item_id TEXT, session_id TEXT NOT NULL, tenant_id TEXT NOT NULL,
+  label TEXT, from_model TEXT, model TEXT NOT NULL, mode TEXT NOT NULL, state TEXT NOT NULL, task_text TEXT NOT NULL,
+  depends_on TEXT NOT NULL, chain TEXT NOT NULL, child_session_id TEXT, result TEXT, error TEXT, tokens INTEGER NOT NULL,
+  verdict TEXT, rework_count INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS work_items_by_task ON work_items (task_id, created_at);
+CREATE INDEX IF NOT EXISTS work_items_by_session ON work_items (session_id, created_at);
+"""
+
+
+
+def _run_columns(db) -> None:
+    """A work item on a command tier runs detached (nebula/runs.py): its run, and the native session it continues."""
+    have = {r["name"] for r in db.execute("PRAGMA table_info(work_items)")}
+    for col in ("run_id", "native_session"):
+        if col not in have:
+            db.execute(f"ALTER TABLE work_items ADD COLUMN {col} TEXT")
+
+
+def _folder_column(db) -> None:
+    """A work item's toolbox folder (nebula/toolbox.py), when its lead named one."""
+    if "folder" not in {r["name"] for r in db.execute("PRAGMA table_info(work_items)")}:
+        db.execute("ALTER TABLE work_items ADD COLUMN folder TEXT")
+
+
+def _work_skills(db) -> None:
+    if "skills" not in {r["name"] for r in db.execute("PRAGMA table_info(work_items)")}:
+        db.execute("ALTER TABLE work_items ADD COLUMN skills TEXT")
+
+
+# nebula/migrate.py: one more step for each change, never an edited one
+STEPS = [SCHEMA, _agent_column, WORK_ITEMS, _run_columns, _folder_column, _work_skills]
+WORK_STATES = ("ready", "running", "waiting_on_team", "in_review", "rework", "awaiting_owner", "done", "failed", "cancelled")
+WORK_FINAL = ("done", "failed", "cancelled")
 
 STUCK_DEFAULT = ("i can't", "i cannot", "i'm unable", "i am unable", "i don't know how", "beyond my", "not able to")
+
+
+def box_line(calls: list[dict]) -> str:
+    """An answer's toolbox line: "read 4 files · edited 2 files · ran 3 commands (1 failed)"."""
+    ok = [c for c in calls if c.get("ok")]
+    read = {c.get("path") for c in ok if c.get("tool") == "read"}
+    edited = {c.get("path") for c in ok if c.get("tool") in ("write", "patch")}
+    ran = [c for c in ok if c.get("tool") == "run"]
+    failed = sum(1 for c in ran if c.get("exit_code"))
+    parts = ([f"read {len(read)} file{'s' if len(read) != 1 else ''}"] if read else []) + \
+            ([f"edited {len(edited)} file{'s' if len(edited) != 1 else ''}"] if edited else []) + \
+            ([f"ran {len(ran)} command{'s' if len(ran) != 1 else ''}" + (f" ({failed} failed)" if failed else "")] if ran else [])
+    refused = len(calls) - len(ok)
+    return " · ".join(parts + ([f"{refused} not done"] if refused else [])) or "looked around its folder"
+
+
+def team_line(lead: str | None, acts: list[dict], work: list[dict] | None = None,
+              skills: list[dict] | None = None) -> str:
+    """An answer's team line from its team calls (and its work items): "Lead: big · took over from fast · delegated
+    to think, check · asked think · reviewed by check (approved, 1 rework) · Halo refused 1"."""
+    live = [a for a in acts if a.get("ruling") == "allowed" and a.get("mode") == "on"]
+    parts = [f"Lead: {lead}"] if lead else []
+    took = [a["from"] for a in live if a.get("action") == "hand_up" and a.get("to") == lead]
+    if took:
+        parts.append("took over from " + ", ".join(dict.fromkeys(took)))
+    down = [a["to"] for a in live if a.get("action") == "hand_down"]
+    if down:
+        parts.append(f"hands the next turns to {down[-1]}")
+    gave = [i.get("to") for a in live if a.get("action") == "delegate" for i in a.get("items") or []]
+    if gave:
+        parts.append("delegated to " + ", ".join(f"{m} ×{gave.count(m)}" if gave.count(m) > 1 else m for m in dict.fromkeys(gave)))
+    asked = [a["to"] for a in live if a.get("action") == "ask"]
+    if asked:
+        parts.append("asked " + ", ".join(dict.fromkeys(asked)))
+    reviews = [w for w in work or [] if w.get("mode") == "review" and w.get("state") == "done"]
+    if reviews:
+        try:
+            last = json.loads(reviews[-1].get("result") or "{}").get("verdict")
+        except ValueError:
+            last = None
+        reworks = sum(1 for w in work or [] if w.get("mode") == "rework")
+        word = {"approve": "approved", "reject": "rejected"}.get(last, "no verdict")
+        parts.append(f"reviewed by {reviews[-1]['model']} ({word}" + (f", {reworks} rework{'s' if reworks > 1 else ''})" if reworks else ")"))
+    owner = [w for w in work or [] if w.get("mode") == "ask_owner"]
+    if owner:
+        waiting = sum(1 for w in owner if w.get("state") == "awaiting_owner")
+        parts.append(f"asked you {len(owner)}" + (f" ({waiting} waiting)" if waiting else ""))
+    notes = sum(1 for a in live if a.get("action") == "note")
+    if notes:
+        parts.append(f"{notes} note{'s' if notes > 1 else ''}")
+    practice = [a for a in acts if a.get("mode") == "practice" and a.get("ruling") == "allowed"]
+    if practice:
+        parts.append(f"practice: {len(practice)} call{'s' if len(practice) > 1 else ''} recorded, not run")
+    refused = sum(1 for a in acts if a.get("ruling") == "refused")
+    if refused:
+        parts.append(f"Halo refused {refused}")
+    used = list(dict.fromkeys(s.get("name") for s in skills or [] if s.get("action") in ("load", "read", "run") and s.get("ok")))
+    if used:
+        parts.append("used skill " + ", ".join(used))
+    return " · ".join(parts)
 
 
 def now() -> str:
@@ -326,6 +426,16 @@ class Ledger:
             db.execute("UPDATE attempts SET tier=?, engine=?, thinking=? WHERE attempt_id=? AND state='running'",
                        (tier, engine, None if thinking is None else int(thinking), attempt_id))
 
+    def show_halo_look(self, look: str) -> str | None:
+        """A Halo look that alerted (it took a step or asks the owner) joins the chat lists: its session's key_source
+        "halo" becomes "halo-alert". Its session id, or None."""
+        with self._tx() as db:
+            row = db.execute("SELECT session_id FROM sessions WHERE session_key=? AND key_source='halo'", (f"halo:{look}",)).fetchone()
+            if row is None:
+                return None
+            db.execute("UPDATE sessions SET key_source='halo-alert', updated_at=? WHERE session_id=?", (now(), row["session_id"]))
+            return row["session_id"]
+
     def set_lifecycle(self, session_id: str, to: str, why: str = "user") -> None:
         """Explicit: the user closed or reopened the session. Reopening keeps every id and advances the revision."""
         if to not in ("active", "closed"):
@@ -381,16 +491,38 @@ class Ledger:
     def summaries(self) -> list[dict]:
         """One line per session for a list: title (its first user message), turns, the tier of its last answer."""
         out = []
-        for s in self.db.execute("SELECT * FROM sessions ORDER BY updated_at DESC, rowid DESC"):
+        for s in self.db.execute("SELECT * FROM sessions WHERE key_source NOT IN ('team', 'halo') ORDER BY updated_at DESC, rowid DESC"):
             conv = self._transcript(self.db, s["session_id"])
             first = next((p for _q, _h, p in conv if p.get("role") == "user"), None)
             last = self.db.execute("SELECT tier, model_id FROM attempts WHERE session_id=? AND state='completed' "
                                    "ORDER BY created_at DESC, rowid DESC LIMIT 1", (s["session_id"],)).fetchone()
+            # where it came from: "page" when someone typed it on the page (the room), else the input of its first
+            # call (chat, messages, responses for the API; hook:<name>, schedule:<name>): the Chats box shows only "page"
+            room = self.db.execute("SELECT 1 FROM attempts WHERE session_id=? AND dialect='room' LIMIT 1", (s["session_id"],)).fetchone()
+            first_in = None if room else self.db.execute("SELECT dialect FROM attempts WHERE session_id=? ORDER BY created_at, rowid LIMIT 1",
+                                                         (s["session_id"],)).fetchone()
             out.append({"session_id": s["session_id"], "title": text_of(first.get("content"))[:80] if first else "(empty)",
+                        "origin": "page" if room else (first_in["dialect"] if first_in else s["key_source"]),
                         "lifecycle": s["lifecycle"], "updated_at": s["updated_at"], "key_source": s["key_source"],
                         "turns": sum(1 for _q, _h, p in conv if p.get("role") == "assistant"),
                         "current_tier": last["tier"] if last else None, "model_id": last["model_id"] if last else None})
         return out
+
+    def team_summaries(self, limit: int = 40) -> list[dict]:
+        """Starweave's team chats: the conversation each work item ran in (its child session), newest first, with the
+        item's label, models, state and the conversation it came from."""
+        try:
+            rows = [dict(r) for r in self.db.execute(
+                "SELECT w.child_session_id AS session_id, w.session_id AS parent, w.task_id, w.label, w.model, w.from_model, "
+                "w.mode, w.state, w.updated_at FROM work_items w JOIN sessions s ON s.session_id = w.child_session_id "
+                "WHERE w.child_session_id IS NOT NULL ORDER BY w.updated_at DESC LIMIT ?", (limit,))]
+        except sqlite3.OperationalError:                  # a ledger from before Starweave
+            return []
+        for r in rows:
+            conv = self._transcript(self.db, r["session_id"])
+            r["turns"] = sum(1 for _q, _h, p in conv if p.get("role") == "assistant")
+            r["title"] = r["label"] or r["model"]
+        return rows
 
     def view(self, session_id: str) -> dict | None:
         """The session as a page shows it: the transcript (rewinds applied) with each reply's attempt, decision and
@@ -406,6 +538,19 @@ class Ledger:
         # a crossing's decision sits on the escalated source attempt; the reply is the destination's
         via = {r["to_attempt"]: r["from_attempt"] for r in self.db.execute("SELECT to_attempt, from_attempt FROM handoffs "
                                                                            "WHERE session_id=?", (session_id,))}
+        acts: dict = {}                          # Starweave: each attempt's team calls, for its answer's team line
+        for r in self.db.execute("SELECT attempt_id, payload FROM events WHERE session_id=? AND kind='team_action' ORDER BY seq",
+                                 (session_id,)):
+            acts.setdefault(r["attempt_id"], []).append(json.loads(r["payload"]))
+        skills: dict = {}
+        for r in self.db.execute("SELECT attempt_id, payload FROM events WHERE session_id=? AND kind='skill' ORDER BY seq",
+                                 (session_id,)):
+            skills.setdefault(r["attempt_id"], []).append(json.loads(r["payload"]))
+        work = self.work_items(session_id=session_id)
+        boxes: dict = {}                         # the toolbox's calls, per attempt, for its answer's line
+        for r in self.db.execute("SELECT attempt_id, payload FROM events WHERE session_id=? AND kind='box_action' ORDER BY seq",
+                                 (session_id,)):
+            boxes.setdefault(r["attempt_id"], []).append(json.loads(r["payload"]))
         items = []
         for e in self.db.execute("SELECT * FROM events WHERE session_id=? ORDER BY seq", (session_id,)):
             kind, payload = e["kind"], json.loads(e["payload"])
@@ -424,6 +569,18 @@ class Ledger:
                     item["attempt"] = {k: a.get(k) for k in ("attempt_id", "tier", "model_id", "thinking", "state", "finish_reason", "agent")}
                     item["decision"] = {"reason": d.get("reason"), "inputs": json.loads(d["inputs"]) if d else None}
                     item["cost"] = {k: c.get(k) for k in ("prompt_n", "cache_n", "predicted_n", "prompt_ms", "predicted_ms")}
+                    chain = [e["attempt_id"]] + ([via[e["attempt_id"]]] if e["attempt_id"] in via else [])
+                    mine = [x for aid in reversed(chain) for x in acts.get(aid, [])]
+                    skill_mine = [x for aid in reversed(chain) for x in skills.get(aid, [])]
+                    task_work = [w for w in work if w["task_id"] in chain]
+                    item["team"] = team_line(a.get("tier"), mine, task_work, skill_mine) if mine or skill_mine else None
+                    used = [x for aid in reversed(chain) for x in boxes.get(aid, [])]
+                    item["toolbox"] = box_line(used) if used else None
+                    item["work_items"] = [{**{k: w[k] for k in ("item_id", "label", "model", "mode", "state", "tokens", "error")},
+                                           "question": w["task_text"][:300] if w["mode"] == "ask_owner" else None,
+                                           "options": (w.get("verdict") or {}).get("options") if w["mode"] == "ask_owner" else None,
+                                           "answer": (w.get("verdict") or {}).get("answer") if w["mode"] == "ask_owner" else None}
+                                          for w in task_work]
                 items.append(item)
             elif kind == "tool_round":
                 calls = [c.get("function", c) for c in (payload.get("assistant") or {}).get("tool_calls") or []]
@@ -436,6 +593,17 @@ class Ledger:
             elif kind == "briefing":
                 items.append({"kind": "briefing", "seq": e["seq"], "at": e["recorded_at"], "covers_through_seq": payload.get("covers_through_seq"),
                               "tier": payload.get("tier"), "objective": payload.get("objective")})
+            elif kind == "team_action":
+                items.append({"kind": "team_action", "seq": e["seq"], "at": e["recorded_at"], "attempt_id": e["attempt_id"],
+                              **{k: payload.get(k) for k in ("action", "from", "to", "why", "mode", "ruling", "reason", "items")}})
+            elif kind == "box_action":
+                items.append({"kind": "box_action", "seq": e["seq"], "at": e["recorded_at"], "attempt_id": e["attempt_id"],
+                              **{k: payload.get(k) for k in ("tool", "from", "path", "command", "exit_code", "ok", "error")}})
+            elif kind == "team_note":
+                items.append({"kind": "team_note", "seq": e["seq"], "at": e["recorded_at"], "attempt_id": e["attempt_id"],
+                              "by": payload.get("by"), "text": payload.get("text")})
+            elif kind == "skill":
+                items.append({"kind": "skill", "seq": e["seq"], "at": e["recorded_at"], "attempt_id": e["attempt_id"], **payload})
             elif kind == "lifecycle":
                 items.append({"kind": "lifecycle", "seq": e["seq"], "at": e["recorded_at"], "to": payload.get("to"), "why": payload.get("why")})
         last = self.db.execute("SELECT c.prompt_tokens, c.completion_tokens, a.tier FROM attempts a JOIN costs c USING "
@@ -443,7 +611,7 @@ class Ledger:
                                (session_id,)).fetchone()
         context = {"last_prompt_tokens": (last["prompt_tokens"] or 0) + (last["completion_tokens"] or 0) if last else 0,
                    "tier": last["tier"] if last else None}
-        return {"session": s, "items": items, "context": context}
+        return {"session": s, "items": items, "context": context, "work_items": self.work_items(session_id=session_id)}
 
     def inputs(self) -> list[dict]:
         """Per input (the attempt's dialect: chat, messages, responses, hook:<name>): attempts, sessions, the last time."""
@@ -500,6 +668,134 @@ class Ledger:
         with self._tx() as db:
             self._event(db, session_id, attempt_id, "tool_round", "assistant", {"assistant": assistant, "results": results},
                         None, now())
+
+    def team_action(self, session_id: str, attempt_id: str | None, payload: dict) -> None:
+        """A Starweave team call (nebula/team.py) and Halo's ruling on it. Not part of the transcript a client sees."""
+        with self._tx() as db:
+            self._event(db, session_id, attempt_id, "team_action", None, payload, None, now())
+
+    def box_action(self, session_id: str, attempt_id: str | None, payload: dict) -> None:
+        """A toolbox call (nebula/toolbox.py): the tool, the path or command, whether it worked."""
+        with self._tx() as db:
+            self._event(db, session_id, attempt_id, "box_action", None, payload, None, now())
+
+    def skill_event(self, session_id: str, attempt_id: str, payload: dict) -> None:
+        with self._tx() as db:
+            self._event(db, session_id, attempt_id, "skill", None, payload, None, now())
+
+    def team_moves(self, session_id: str) -> list[dict]:
+        """The session's hand moves (up and down), oldest first."""
+        return [json.loads(r["payload"]) for r in self.db.execute(
+            "SELECT payload FROM events WHERE session_id=? AND kind='team_action' AND "
+            "json_extract(payload, '$.action') IN ('hand_up', 'hand_down') ORDER BY seq", (session_id,))]
+
+    def pending_hand_down(self, session_id: str, attempt_id: str) -> str | None:
+        """The model a live, allowed hand-down in the previous request named, when no other request has run since:
+        the next turn's floor."""
+        row = self.db.execute("SELECT seq, payload FROM events WHERE session_id=? AND kind='team_action' AND "
+                              "json_extract(payload, '$.action') IN ('hand_up', 'hand_down') ORDER BY seq DESC LIMIT 1",
+                              (session_id,)).fetchone()
+        if row is None:
+            return None
+        p = json.loads(row["payload"])
+        if p.get("action") != "hand_down" or p.get("ruling") != "allowed" or p.get("mode") != "on":
+            return None
+        later = self.db.execute("SELECT COUNT(*) AS n FROM events WHERE session_id=? AND kind='request' AND seq>? "
+                                "AND attempt_id<>?", (session_id, row["seq"], attempt_id)).fetchone()
+        return None if later["n"] else (p.get("to") or None)
+
+    def team_note(self, session_id: str, attempt_id: str | None, by: str | None, text: str) -> None:
+        """A team member's note: the task's shared memory, in every later teammate's prompt."""
+        with self._tx() as db:
+            self._event(db, session_id, attempt_id, "team_note", None, {"by": by, "text": text}, None, now())
+
+    def team_notes(self, session_id: str) -> list[dict]:
+        return [json.loads(r["payload"]) for r in self.db.execute(
+            "SELECT payload FROM events WHERE session_id=? AND kind='team_note' ORDER BY seq", (session_id,))]
+
+    # --- Starweave's work items
+    def add_work_item(self, *, task_id: str, session_id: str, model: str, mode: str, task_text: str, label: str | None = None,
+                      from_model: str | None = None, parent_item_id: str | None = None, depends_on=(), chain=(), skills=()) -> str:
+        item_id, t = new_id("wi"), now()
+        with self._tx() as db:
+            db.execute("INSERT INTO work_items (item_id, task_id, parent_item_id, session_id, tenant_id, label, from_model, model, "
+                       "mode, state, task_text, depends_on, chain, child_session_id, result, error, tokens, verdict, rework_count, "
+                       "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (item_id, task_id, parent_item_id, session_id, self.tenant, label, from_model, model, mode, "ready",
+                        task_text, json.dumps(list(depends_on)), json.dumps(list(chain)), None, None, None, 0, None, 0, t, t))
+            db.execute("UPDATE work_items SET skills=? WHERE item_id=?", (json.dumps(list(skills)), item_id))
+        return item_id
+
+    def update_work_item(self, item_id: str, **fields) -> None:
+        """state, child_session_id, result, error, tokens (added), verdict, rework_count, run_id, native_session."""
+        allowed = {"state", "child_session_id", "result", "error", "verdict", "rework_count", "run_id", "native_session", "folder"}
+        sets, args = [], []
+        for k, v in fields.items():
+            if k == "tokens":
+                sets.append("tokens=tokens+?")
+                args.append(int(v or 0))
+            elif k in allowed:
+                if k == "state" and v not in WORK_STATES:
+                    raise ValueError(f"no work item state {v!r}")
+                sets.append(f"{k}=?")
+                args.append(json.dumps(v) if k == "verdict" and v is not None else v)
+        if not sets:
+            return
+        with self._tx() as db:
+            db.execute(f"UPDATE work_items SET {', '.join(sets)}, updated_at=? WHERE item_id=?", (*args, now(), item_id))
+
+    def answer_owner(self, item_id: str, choice: str) -> dict:
+        """The owner's answer to a team's question: the item is done, and the answer waits for the lead's next turn
+        (and goes into the task's notes, so every later teammate reads it)."""
+        it = self.work_item(item_id)
+        if it is None or it["mode"] != "ask_owner":
+            raise ValueError(f"no question {item_id}")
+        if it["state"] != "awaiting_owner":
+            raise ValueError("that question was answered already")
+        v = dict(it.get("verdict") or {})
+        v.update(answer=str(choice)[:1000], delivered=False)
+        self.update_work_item(item_id, state="done", result=v["answer"], verdict=v)
+        self.team_note(it["session_id"], None, "owner", f"The owner answered “{it['task_text'][:200]}”: {v['answer']}")
+        return self.work_item(item_id)
+
+    def owner_answers(self, session_id: str, take: bool = False) -> list[dict]:
+        """Answers the owner gave that the lead has not read yet; `take` marks them read."""
+        out = [i for i in self.work_items(session_id=session_id) if i["mode"] == "ask_owner" and i["state"] == "done"
+               and not (i.get("verdict") or {}).get("delivered")]
+        if take:
+            for i in out:
+                self.update_work_item(i["item_id"], verdict={**(i.get("verdict") or {}), "delivered": True})
+        return out
+
+    def running_runs(self) -> list[dict]:
+        """Work items whose detached run (nebula/runs.py) has not been recorded yet."""
+        return [self._item(r) for r in self.db.execute(
+            "SELECT * FROM work_items WHERE run_id IS NOT NULL AND state IN ('running', 'rework', 'in_review') ORDER BY created_at")]
+
+    def stale_items(self, states) -> list[dict]:
+        """Work items in one of `states` with no detached run: at start, nobody works on them any more."""
+        marks = ",".join("?" * len(states))
+        return [self._item(r) for r in self.db.execute(
+            f"SELECT * FROM work_items WHERE run_id IS NULL AND state IN ({marks}) ORDER BY created_at", tuple(states))]
+
+    def work_item(self, item_id: str) -> dict | None:
+        row = self.db.execute("SELECT * FROM work_items WHERE item_id=?", (item_id,)).fetchone()
+        return self._item(row) if row else None
+
+    def work_items(self, *, task_id: str | None = None, session_id: str | None = None) -> list[dict]:
+        if task_id is not None:
+            rows = self.db.execute("SELECT * FROM work_items WHERE task_id=? ORDER BY created_at, rowid", (task_id,))
+        else:
+            rows = self.db.execute("SELECT * FROM work_items WHERE session_id=? ORDER BY created_at, rowid", (session_id,))
+        return [self._item(r) for r in rows]
+
+    @staticmethod
+    def _item(row) -> dict:
+        d = dict(row)
+        for k in ("depends_on", "chain", "verdict", "skills"):
+            if d.get(k) is not None:
+                d[k] = json.loads(d[k])
+        return d
 
     def briefing(self, session_id: str, attempt_id: str | None, payload: dict) -> None:
         """A structured compaction of the transcript through `payload['covers_through_seq']`."""

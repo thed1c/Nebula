@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.2.0
+
+**Star Weaving: your models as one team.** Ask once and Halo picks the model that leads the task. With Teamwork on,
+the lead may hand parts of the work to its team, ask a teammate, hand the work up to a larger model, and send it for
+review and rework; you get one answer back, with a team line saying who did what. Halo referees each move (a model
+that is down, too small or past the limits is refused, with the reason) and asks you when a team has a question only
+you can answer. Halo suggests teams from your models; each team has a contract (who leads, helps and reviews, what
+"done" means, its limits) and a card on the Star Weaving page with its missions. Every task has limits you can change:
+teammates at once, depth, tokens, 20 minutes in a chat or 2 hours in the background, rework rounds, and US $1 on cloud
+models, held per piece of work. A task can start from the chat ("Halo, I want to do this task"). Off by default. A
+restart marks running team work stopped instead of losing it, and closing the window leaves your engines running.
+
+**Skills.** A skill (a folder with a SKILL.md) from a link or from a skills repository: checked before it is written
+(its name, what it asks to run, prompt-injection and data-leak patterns), switched off when the check warns, used only
+once you turn it on and only for a task it fits, its scripts run in a sandbox. Skills can be attached to routes, and
+updates are checked again before anything is replaced.
+
+**The toolbox.** A model can work in one folder you pick for it (Models page, per model): list, search, read, write
+and patch files there, and run commands inside an OpenShell sandbox with no network. Every path is checked against the
+folder (links and swapped folders included); each call is in the ledger. Teamwork, skills and the toolbox are the
+owner's only: never offered to a guest, a friend, another Nebula, or a plain API call.
+
+**A new layout.** Four tabs: Navigation (Star Calling, Star Weaving, Gravity), Captain's Log, Engineering (Engines,
+Models, Skills) and Control (Halo, Appearance, System). Star Calling shows how a request finds its model: a row per
+route, models left to right, routes of your own with a kind each (thinking, pictures, tools, code), Any task first,
+and smart routing as Off or On with a profile (Just watch, Halo picks, Save power, Balanced, Best answers, Custom).
+Engines is machines and engines; Models is the files and cloud models. Panels are widgets you can resize, fold and
+move. Gravity's page has Constellation (the gateway) on top and your friends below, each with a Block. Errors,
+OpenTelemetry and a new syslog forwarder (off by default; UDP, TCP or TLS) are on Captain's Log. The map rests when
+nothing happens, with an Effects menu (animations full, calm or off, and each effect), and the window at rest uses a
+fraction of the CPU it did. Text is readable on every page; helper text shows on hover.
+
+**Halo.** Halo is the front door: it starts team tasks from the chat, and a chat opens only for an alert or a
+question. Halo's own page holds its personality, instructions, version and Lookup. Halo can run Liquid AI's
+LFM3-Omni-2B if you pick it (Halo > Version > Omni, with an NVIDIA card): the model and Nebula's adapters for it
+(about 30 MB) download the first time.
+
+**An older and a newer NVIDIA card together.** Impulse (L) now carries kernels for every card from Maxwell to
+Blackwell (CUDA 12.9), so on a PC with, say, a GTX 1080 Ti beside an RTX 3070, Run a model asks which graphics card:
+Nebula's pick (the newer card, on Impulse's main build), the older card, or all of them on Impulse (L). The Engines page
+can move a model between them and offers the download too (about 588 MB on Linux, 704 MB on Windows; never in the
+installer). Impulse (L) is now offered on any PC with an NVIDIA card.
+
+**Gravity.** A friend sees each of your models by its own name, and a friend's calls show as pulses through the
+wormhole. Peers get a random two-word name, new each time they come online; away peers leave the map and say why;
+dead dials stop. A friend's calls reach only the model API (/v1/...). A model on an engine Nebula deployed to one of
+your own servers shares without the care warning.
+
+**Fixes and safety.** Lookup reads only public web addresses (redirects and DNS answers checked); a bad Content-Length
+is refused at once; the error log hears every part of Nebula and folds repeats; the Chats box shows your own chats
+only (API calls stay in the ledger); a plain API call is never offered Nebula's own tools; the engine monitor asks
+every engine at once, so one that does not answer no longer holds the page. New: "No PIN on this computer" (System > Sign-in):
+the page opens without a PIN on this computer only; other devices still sign in (off by default).
+
+Not in this release: the LFM2.5 8B fix for experts kept in RAM (it changes Impulse itself, so it comes with the next
+full release); teams across Gravity.
+
 ## 0.1.7
 
 **Impulse (L): an optional engine for older NVIDIA cards** (Maxwell, Pascal, Volta: GTX 900 / 10 series, Titan X / Xp /
@@ -60,6 +117,11 @@ yours alone already. A folder an earlier run locked stays locked until it is giv
 GTX 16 and newer). An older card (a GTX 10, for one) is now shown as "older than this engine build: CPU only", is never
 picked for an engine, Halo or a guided setup, and an engine set to it stops at once with that reason instead of a
 generic failure. Models still run on the CPU there. An engine build for older cards is planned as an optional download.
+
+**LFM2.5 8B in the model list.** Liquid AI's LFM2.5-8B-A1B, the smallest and quickest model on offer, is now in
+first run and Deploy your own: Liquid AI's own Q6_K file (7.0 GB, pinned and checked against its hash), for a 6 GB
+card and 16 GB of RAM, and offered to friends. Impulse runs it on the same engine as LFM2.5 24B. On a computer too
+small for Gemma 4 26B and LFM2.5 24B it is the model Nebula recommends. Text only, standard build only.
 
 **Add a server: engines start on machines with Podman 5.** On a model machine whose Podman is version 5 (Ubuntu 25.10
 and later), an engine's sandbox failed at once: NVIDIA's description of the cards for containers (CDI) carries the

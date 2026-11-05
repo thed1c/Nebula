@@ -156,6 +156,9 @@ def find_base(models_dir: str, m: dict | None = None) -> str | None:
     if env:
         return env if os.path.isfile(env) else None
     want = int(m["base"]["bytes"])
+    if m["base"].get("fix"):                              # a base that runs only as its fixed copy (Halo Omni)
+        p = Path(halo_model.fixed_path(models_dir, m))
+        return str(p) if p.is_file() and p.stat().st_size == want else None
     for p in [d / m["base"]["file"] for d in _bundle_dirs()]:
         if p.is_file() and p.stat().st_size == want:     # the installer checked its sha256
             return str(p)
@@ -202,14 +205,23 @@ class HaloEngine:
         self.state = "off"
         self.progress: dict | None = None
         self.m: dict | None = None        # the model entry it runs (halo_model.manifest), once chosen
-        self.upgrade: dict | None = None  # LFM3 downloading while Halo v2 runs: {"model", "progress", "why"}
+        self.upgrade: dict | None = None  # the chosen model downloading while another runs: {"model", "progress", "why"}
         self._wake = threading.Event()
 
     def settings(self) -> dict:
         a = self.cfg.assistant if isinstance(self.cfg.assistant, dict) else {}
         h = a.get("halo") if isinstance(a.get("halo"), dict) else {}
         return {"own_model": h.get("own_model", True) is not False, "variant": h.get("variant") or "standard",
-                "where": "cpu" if h.get("where") == "cpu" else "gpu"}
+                "where": "cpu" if h.get("where") == "cpu" else "gpu", "model": h.get("model") or None}
+
+    def chosen(self, runtime: str | None) -> dict:
+        """The model entry Halo runs on this runtime: the owner's pick (Halo › Version) when it runs there, else the
+        runtime's own; a model whose adapters are a piece reads them from that piece's folder."""
+        m = halo_model.manifest(model=halo_model.model_for(runtime, choice=self.settings()["model"]))
+        if m.get("piece"):
+            from nebula import pieces
+            m = {**m, "_dir": str(pieces.folder(m["piece"], self.cfg.base_dir))}
+        return m
 
     def models_dir(self) -> str:
         yard = getattr(self.server, "yard", None)
@@ -270,8 +282,16 @@ class HaloEngine:
             self.state, self.why = "off", "turned off: Halo thinks with the Assistant's model"
             return self
         server = find_servers(self.cfg.base_dir)
-        self.m = halo_model.manifest(model=halo_model.model_for(server[0][0] if server else None))
+        self.m = self.chosen(server[0][0] if server else None)
         bad = halo_model.verify_assets(self.m)
+        if bad and self.m.get("piece"):                   # its adapters are a download of their own (Halo Omni)
+            from nebula import pieces
+            if pieces.pin(self.m["piece"]) is None:
+                self.state, self.why = "unavailable", f"{self.m['name']}: {pieces.say(self.m['piece'])}"
+                return self
+            self.state, self.why = "downloading", f"fetching {self.m['name']}'s adapters: " + pieces.say(self.m["piece"])
+            threading.Thread(target=self._fetch_piece_then_start, name="halo-piece", daemon=True).start()
+            return self
         base = find_base(self.models_dir(), self.m)
         if not bad and not has_nvidia() and not any(rt != "Impulse" for rt, _ in server):
             from nebula import pieces                     # no NVIDIA card: Impulse portable, downloaded now, said plainly
@@ -292,7 +312,7 @@ class HaloEngine:
             if fb is not None:                            # Halo v2's file is here (an update from 0.1.4): v2 runs now,
                 want, (self.m, base) = self.m, fb         # LFM3's file comes in the background and Halo moves to it
                 self.upgrade = {"model": want["id"], "progress": None,
-                                "why": f"Halo moves to {want['name']} when its model is in place: fetching {_gb(want)} for this NVIDIA card; Halo v2 runs meanwhile"}
+                                "why": f"Halo moves to {want['name']} when its model is in place: fetching {_gb(want)} for this NVIDIA card; {self.m['name']} runs meanwhile"}
                 threading.Thread(target=self._fetch_upgrade, args=(want,), name="halo-upgrade", daemon=True).start()
             else:
                 self.state, self.why = "downloading", f"fetching its model ({_gb(self.m)}: {self.m['name']})"
@@ -308,6 +328,8 @@ class HaloEngine:
         """Another model these runtimes run whose file is already here (Halo v2 on an NVIDIA machine): (its entry, its file)."""
         rts = {rt for rt, _ in server}
         for m in halo_model.models():
+            if m.get("choice"):                           # a model the owner picks is never a fallback
+                continue
             if m["id"] != (self.m or {}).get("id") and rts & set(m.get("runtimes") or []) and not halo_model.verify_assets(m):
                 b = find_base(self.models_dir(), m)
                 if b:
@@ -334,6 +356,8 @@ class HaloEngine:
                     time.sleep(1)
                 if self.state == "stopped":
                     return
+                if m["base"].get("fix"):                  # pulled: its fixed copy now (Halo Omni's template)
+                    halo_model.fix_base(self.models_dir(), m)
                 if not find_base(self.models_dir(), m):
                     raise RuntimeError("the file did not check out")
                 LOG.info("Halo's model: %s is in place; Halo moves to it", m["name"])
@@ -341,12 +365,29 @@ class HaloEngine:
                 self.restart()
                 return
             except Exception as e:  # noqa: BLE001 - offline, or the Hub away: Halo v2 keeps running, tried again later
-                self.upgrade["why"] = (f"{m['name']} could not be fetched yet ({str(e)[:160]}); Halo v2 runs; trying again in "
+                self.upgrade["why"] = (f"{m['name']} could not be fetched yet ({str(e)[:160]}); {(self.m or {}).get('name') or 'Halo v2'} runs; trying again in "
                                        f"{int(self.RETRY_S)} s")
                 LOG.info("Halo's model: %s", self.upgrade["why"])
                 wake.wait(self.RETRY_S)
                 if wake is not self._wake or self.state == "stopped":
                     return
+
+    def _fetch_piece_then_start(self) -> None:
+        """The chosen model's adapters (a piece: pinned, sha256), then Halo's start as usual; while offline, tried again."""
+        while self.state == "downloading" and self.m and self.m.get("piece"):
+            try:
+                from nebula import pieces
+                pieces.fetch(self.m["piece"], self.cfg.base_dir, lambda got, total: setattr(self, "progress", {"bytes": got, "total": total}))
+                self.progress = None
+                LOG.info("Halo's model: %s's adapters are in place", self.m["name"])
+                self.state = "starting"
+                self._start()
+                return
+            except Exception as e:  # noqa: BLE001 - offline, or the release away: try again later
+                self.why = f"{self.m['name']}'s adapters could not be fetched yet ({str(e)[:160]}); trying again in {int(self.RETRY_S)} s"
+                LOG.info("Halo's model: %s", self.why)
+                self._wake.wait(self.RETRY_S)
+                self._wake.clear()
 
     def _fetch_runtime_then_start(self) -> None:
         """Impulse portable (pinned, sha256), then Halo's start as usual; while offline, tried again later."""
@@ -382,6 +423,8 @@ class HaloEngine:
                             raise RuntimeError(next((f["error"] for f in st["files"] if f.get("error")), st["state"]))
                         break
                     time.sleep(1)
+                if self.m["base"].get("fix"):             # pulled: its fixed copy now (Halo Omni's template)
+                    halo_model.fix_base(self.models_dir(), self.m)
                 base = find_base(self.models_dir(), self.m)
                 if base:
                     self.state = "starting"
@@ -497,7 +540,32 @@ class HaloEngine:
         return {"state": self.state, "where": self.where, "runtime": self.runtime, "why": self.why,
                 **({"gpu_name": self.gpu_name} if getattr(self, "gpu_name", None) else {}), **({"progress": self.progress} if self.progress else {}),
                 **({"model": self.m["id"], "model_name": self.m["name"]} if self.m else {}), **({"upgrade": self.upgrade} if self.upgrade else {}),
-                "own_model": st["own_model"], "variant": st["variant"], "runs_on": st["where"]}      # runs_on: the owner's choice
+                "own_model": st["own_model"], "variant": st["variant"], "runs_on": st["where"],      # runs_on: the owner's choice
+                "picked": st["model"], "choices": self.choices_view()}
+
+    def choices_view(self) -> list[dict]:
+        """Halo › Version: the models the owner may pick on this machine's runtime, what each needs before it runs."""
+        try:
+            server = find_servers(self.cfg.base_dir)
+            runtime = server[0][0] if server else None
+            out = []
+            for m in halo_model.choices(runtime):
+                if m.get("piece"):
+                    from nebula import pieces
+                    m = {**m, "_dir": str(pieces.folder(m["piece"], self.cfg.base_dir))}
+                need = []
+                if not find_base(self.models_dir(), m):
+                    need.append(f"its model file ({_gb(m)}, from Hugging Face)")
+                if m.get("piece") and not all((halo_model.assets_dir(m) / a["file"]).is_file()      # here (sizes: the view
+                                               and (halo_model.assets_dir(m) / a["file"]).stat().st_size == a["bytes"]   # polls; the
+                                               for a in m["adapters"].values()):                         # start checks sha256)
+                    from nebula import pieces
+                    p = pieces.pin(m["piece"])
+                    need.append(f"its adapters ({max(1, p['bytes'] // 2**20)} MB)" if p else "its adapters (not published for this computer yet)")
+                out.append({"id": m["id"], "name": m["name"], "why": m.get("why") or "", "choice": bool(m.get("choice")), "needs": need})
+            return out
+        except Exception:  # noqa: BLE001 - the panel shows no choice rather than failing
+            return []
 
     def wrong_place(self) -> bool:
         """Running somewhere other than chosen: on a GPU though the CPU was chosen, or on the CPU though a GPU was."""

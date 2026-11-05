@@ -44,6 +44,9 @@ class Rules:
     stage_router: dict = field(default_factory=dict)   # nebula/stage.py: {mode, picker, threshold, judge}
     route_rules: list = field(default_factory=list)    # nebula/route_rules.py: if … (is / is not) … then …, in order
     routes: dict = field(default_factory=dict)         # nebula/route_settings.py: {route: {"instructions": …}}
+    starweave: dict = field(default_factory=dict)      # nebula/team.py: {mode: off|practice|on, max_hand_moves}
+    toolbox: dict = field(default_factory=dict)        # nebula/toolbox.py: {mode, folder, folders, off, image, run_timeout_s}
+    skills: dict = field(default_factory=dict)         # nebula/skill_tools.py: attachment and execution settings
 
     @staticmethod
     def from_dict(d: dict | None) -> "Rules":
@@ -55,6 +58,12 @@ class Rules:
                 r.tolerance_seconds = {**r.tolerance_seconds, **{str(a): float(b) for a, b in v.items()}}
             elif k == "stage_router" and isinstance(v, dict):
                 r.stage_router = dict(v)
+            elif k == "starweave" and isinstance(v, dict):
+                r.starweave = dict(v)
+            elif k == "toolbox" and isinstance(v, dict):
+                r.toolbox = dict(v)
+            elif k == "skills" and isinstance(v, dict):
+                r.skills = dict(v)
             elif k == "route_rules" and isinstance(v, list):
                 r.route_rules = list(v)
             elif k == "routes" and isinstance(v, dict):

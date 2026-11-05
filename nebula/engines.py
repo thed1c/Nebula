@@ -65,6 +65,34 @@ class EngineSpecError(ValueError):
     pass
 
 
+_BUILDS: dict[tuple, str | None] = {}
+_BUILDS_LOCK = threading.Lock()
+
+
+def build_of(binary: str | None) -> str | None:
+    """An engine program's own --version line (its build), read once per program file in the background: the
+    Engines page shows it, and never waits for it. Run with no card visible, so reading it touches no GPU."""
+    try:
+        st = os.stat(binary) if binary else None
+    except OSError:
+        st = None
+    if st is None or not os.path.isfile(binary):
+        return None
+    key = (binary, st.st_mtime_ns, st.st_size)
+    with _BUILDS_LOCK:
+        if key in _BUILDS:
+            return _BUILDS[key]
+        _BUILDS[key] = None
+
+    def read():
+        from nebula import packages
+        v = packages.version(binary)
+        with _BUILDS_LOCK:
+            _BUILDS[key] = (v or "")[:120] or None
+    threading.Thread(target=read, name="engine-build", daemon=True).start()
+    return None
+
+
 def is_fx_command(command) -> bool:
     """A command that runs impulse-fx (Impulse's server for a Flash-Next pack)."""
     words = command.split() if isinstance(command, str) else [str(x) for x in (command or [])]
@@ -210,7 +238,7 @@ def key_path(spec: dict, cfg) -> str | None:
 def ensure_key(path: str) -> str:
     import secrets
     try:
-        k = open(path, encoding="utf-8").read().strip()
+        k = Path(path).read_text(encoding="utf-8").strip()
         if k:
             return k
     except OSError:
@@ -352,11 +380,13 @@ def cards() -> list[dict]:
 
 # Impulse's builds (CUDA 13) carry kernels from compute capability 7.5 up (RTX 20 / GTX 16 and newer): CUDA 13 cannot build
 # for older cards (a GTX 10, Pascal, is 6.1). Those run on Impulse (L), the CUDA 12 build for Maxwell, Pascal and Volta
-# (compute 5.0 to 7.0: GTX 900 and 10, Titan X / Xp / V, Tesla M, P and V100), a piece Nebula downloads when the owner
-# asks (nebula/pieces.py, never in the installers). Anything older (Kepler and before) runs on the CPU only.
+# (compute 5.0 to 7.0: GTX 900 and 10, Titan X / Xp / V, Tesla M, P and V100) and every newer card too, so a PC with an
+# older and a newer card runs one engine on both; a piece Nebula downloads when the owner asks (nebula/pieces.py, never
+# in the installers). Anything older (Kepler and before) runs on the CPU only.
 IMPULSE_MIN_CC = (7, 5)
 LEGACY = "impulse-legacy"            # Impulse (L)'s piece, and a guided setup's program while it is still to be downloaded
-LEGACY_CAPS = ("5.0", "5.2", "6.0", "6.1", "7.0")       # the cards its build carries kernels for
+LEGACY_CAPS = ("5.0", "5.2", "6.0", "6.1", "7.0")       # the older cards, which only Impulse (L) runs
+LEGACY_RUNS = LEGACY_CAPS + ("7.5", "8.0", "8.6", "8.9", "9.0", "10.0", "12.0")   # every card its build carries kernels for
 LEGACY_MIN_DRIVER = {"nt": "528.33", "posix": "525.60.13"}   # CUDA 12.9's oldest NVIDIA driver
 
 
@@ -369,6 +399,18 @@ def is_legacy_card(c: dict) -> bool:
     """An older card Impulse (L) runs (Maxwell, Pascal, Volta)."""
     cc = _cc(c)
     return cc is not None and f"{cc[0]}.{cc[1]}" in LEGACY_CAPS
+
+
+def legacy_runs(c: dict) -> bool:
+    """A card Impulse (L) carries kernels for: an older one, or a newer one beside it in the same engine."""
+    cc = _cc(c)
+    return cc is not None and f"{cc[0]}.{cc[1]}" in LEGACY_RUNS
+
+
+def mixed_pc(have: list[dict] | None = None) -> bool:
+    """This PC has an older card Impulse (L) runs and a newer one: a model's cards are then the owner's choice."""
+    have = cards() if have is None else have
+    return any(is_legacy_card(c) for c in have) and any((_cc(c) or (0, 0)) >= IMPULSE_MIN_CC for c in have)
 
 
 def legacy_program(base_dir: str | None = None) -> str | None:
@@ -422,7 +464,7 @@ def legacy_offer() -> str:
     p = pieces.pin(LEGACY)
     if p is None:
         return "Impulse (L), Nebula's engine for older NVIDIA cards, is not published for this computer yet: it runs on the CPU"
-    return (f"Impulse (L), Nebula's engine for older NVIDIA cards, runs it: Run a model offers it "
+    return (f"Impulse (L), Nebula's engine for older NVIDIA cards, runs it: Run a model and the Engines page offer it "
             f"(a download of {max(1, p['bytes'] // 2**20)} MB, not in the installer)")
 
 
@@ -451,24 +493,24 @@ def card_too_old_short(c: dict, base_dir: str | None = None, driver: bool = True
         return None
     if is_legacy_card(c):
         return ("older card: its NVIDIA driver is too old for Impulse (L)" if legacy_program(base_dir) else
-                "older card: needs Impulse (L)" + (" (Run a model offers it)" if "Run a model offers it" in why else ""))
+                "older card: needs Impulse (L)" + (" (a download, offered here and in Run a model)" if "offer it" in why else ""))
     return "older than every Impulse build: CPU only"
 
 
 def impulse_build(cs: list[dict], binary=None, base_dir: str | None = None, driver: bool = True) -> tuple[str | None, str | None]:
     """The Impulse program an engine on these cards runs and why it cannot run there: (program, None), with program None
-    for "as the engine says"; or (None, why). Its cards are of one kind: all older ones run Impulse (L), the others the
-    main build, so the regular program (or none named) becomes Impulse (L)'s on older cards and back on newer ones; a
-    program the owner named by hand is left as it is."""
+    for "as the engine says"; or (None, why). An engine with an older card runs Impulse (L) on all its cards (it carries
+    the newer ones' kernels too); one on newer cards only, the main build. So the regular program (or none named)
+    becomes Impulse (L)'s with an older card and back without one; a program the owner named by hand is left as it is."""
     known = [c for c in cs if _cc(c) is not None]
     old = [c for c in known if _cc(c) < IMPULSE_MIN_CC]
-    new = [c for c in known if _cc(c) >= IMPULSE_MIN_CC]
-    if old and new:
-        return None, (f"{old[0].get('name') or 'one card'} is an older card (Impulse (L)) and {new[0].get('name') or 'another'} "
-                      "a newer one (Impulse): one engine runs one Impulse build, so pick cards of one kind")
     why = next((r for r in (card_too_old(c, base_dir, driver) for c in old) if r), None)
     if why:
         return None, why
+    beside = next((c for c in known if old and not legacy_runs(c)), None)
+    if beside:
+        return None, (f"Impulse (L) carries no kernels for {beside.get('name') or 'a card'} (compute {beside.get('compute_cap')}): "
+                      f"it cannot share an engine with {old[0].get('name') or 'an older card'}")
     from nebula import packages
     regular = packages.locate("impulse", base_dir)
     as_given = (not binary or is_legacy_program(binary)
@@ -480,6 +522,33 @@ def impulse_build(cs: list[dict], binary=None, base_dir: str | None = None, driv
     if binary and is_legacy_program(binary):
         return regular, None
     return None, None
+
+
+def legacy_status(base_dir: str | None = None) -> dict | None:
+    """Impulse (L) on this PC for the Engines page: None without an older card; else {"here", "offer" (what the
+    download is, when it can be had), "why" (when it cannot run here)}."""
+    if not any(is_legacy_card(c) for c in cards()):
+        return None
+    from nebula import pieces
+    here = legacy_program(base_dir) is not None
+    gap = legacy_driver_gap()
+    return {"here": here, "offer": None if here or gap or pieces.pin(LEGACY) is None else pieces.say(LEGACY),
+            "why": gap or (None if here or pieces.pin(LEGACY) is not None else legacy_offer())}
+
+
+def legacy_optional(base_dir: str | None = None) -> dict | None:
+    """Impulse (L) for a PC that does not need it (its NVIDIA cards are all newer ones): still to be had by whoever wants
+    it (the owner, 2026-11-04: "Allow people to still get Impulse-L if they want"), and run by an engine whose binary
+    names it. None without an NVIDIA card, or with an older one (legacy_status says that)."""
+    have = cards()
+    if not have or any(is_legacy_card(c) for c in have):
+        return None
+    from nebula import pieces
+    prog = legacy_program(base_dir)
+    gap = legacy_driver_gap()
+    return {"here": prog is not None, "program": prog, "optional": True,
+            "offer": None if prog or gap or pieces.pin(LEGACY) is None else pieces.say(LEGACY),
+            "why": gap or (None if prog or pieces.pin(LEGACY) is not None else "Impulse (L) is not published for this computer yet")}
 
 
 def legacy_here(base_dir: str | None = None) -> tuple[str | None, str | None]:
@@ -1334,9 +1403,12 @@ class Engines:
             command, command_error = command_of(s, self.cfg.base_dir, key_path(s, self.cfg)), None
         except EngineSpecError as e:
             command, command_error = None, str(e)
+        from nebula import packages
         return {"name": name, "spec": s, "address": self.address(name), "command": command, "command_error": command_error,
                 "state": self.state(name), "pid": st.get("pid"), "error": st.get("error"), "seconds": st.get("seconds"),
                 "lines": st.get("lines")[-40:], "version": len(self.history(name)), "tiers": tiers,
+                "package": (packages.PACKAGES.get(s["kind"]) or {}).get("label"),
+                "build": build_of(command[0]) if command and s["kind"] != "command" else None,
                 "in_flight": self.in_flight(s), "fit": fit(s, self.cfg.base_dir),
                 "sandboxed": p is not None and name not in self.unsandboxed,
                 "sandbox_warning": self.unsandboxed.get(name) if p is not None else None}

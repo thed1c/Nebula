@@ -17,10 +17,11 @@ Halo reads it through Lookup's read-only `security` tool, and the owner reads it
 | `caller.changed`, `caller.removed` | a caller added, changed or removed |
 | `sessions.deleted` | conversations deleted for good on the page (how many; never which, nor what they said) |
 | `guest.refused` | a guest asked for a model not shared with it (an app's key, or a Gravity peer) |
-| `gravity.invite`, `gravity.join`, `gravity.joined`, `gravity.refused`, `gravity.grants`, `gravity.revoked` | Gravity invites made, someone joining by one, this Nebula joining another, an invite refused, models ticked for a peer, a peer removed |
+| `gravity.invite`, `gravity.join`, `gravity.joined`, `gravity.refused`, `gravity.grants`, `gravity.revoked`, `gravity.blocked` | Gravity invites made, someone joining by one, this Nebula joining another, an invite refused, models ticked for a peer, a peer removed, a peer blocked or let back |
 | `share.changed` | a model marked shared, an entry point or a collection's sharing changed |
 | `server.*`, `network.*` | a model server added, trusted, removed; the household network's invites |
 | `halo.action`, `halo.undo`, `halo.ask` | everything Halo does, its undo, and what it asks the owner |
+| `otel.settings`, `syslog.settings` | OpenTelemetry or the syslog forwarder turned on or off, or pointed somewhere else |
 
 Each row has a time, a kind, a severity (`info`, `notice`, `warn`, `alert`), who (an address, `owner`,
 `caller:<id>` or `peer:<id>`), what it was about, and a few details. It never holds a key, token, invite secret,
@@ -39,3 +40,5 @@ PIN, password or prompt.
 
 `GET /api/security?since=SEQ&kinds=gravity.*,auth.refused&who=caller:x&min=warn&since_s=3600&limit=100` returns
 the newest first, each with its count and last time, plus the counts per kind in the last hour.
+
+A syslog server can get these events as they happen (kind, who and what; never the details): [syslog.md](syslog.md).

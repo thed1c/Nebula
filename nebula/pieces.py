@@ -35,14 +35,21 @@ def _piece(name: str) -> tuple[dict, dict]:
     return m, m["pieces"][name]
 
 
+def _platform(p: dict) -> str:
+    """The piece's file for this platform, or its one file for every platform ("any": data, such as Halo's adapters)."""
+    files = p.get("files") or {}
+    return platform_key() if platform_key() in files or "any" not in files else "any"
+
+
 def pin(name: str) -> dict | None:
     m, p = _piece(name)
-    f = (p.get("files") or {}).get(platform_key()) or {}
+    plat = _platform(p)
+    f = (p.get("files") or {}).get(plat) or {}
     if not f.get("sha256"):
         return None
     ver = p.get("version") or m["version"]              # a piece published with a later release names its own
     url = (m["url"].replace("{version}", ver).replace("{piece}", name)
-           .replace("{platform}", platform_key()).replace("{ext}", f["ext"]))
+           .replace("{platform}", plat).replace("{ext}", f["ext"]))
     return {"url": url, "sha256": f["sha256"], "bytes": int(f.get("bytes") or 0), "ext": f["ext"], "version": ver,
             "label": p.get("label") or name, "why": p.get("why") or ""}
 
@@ -52,8 +59,9 @@ def folder(name: str, base_dir: str | None) -> Path:
 
 
 def program(name: str) -> str:
+    """The file that says the piece is here: its program (.exe on Windows), or a data piece's file as named."""
     _m, p = _piece(name)
-    return p["program"] + (".exe" if os.name == "nt" else "")
+    return p["program"] + (".exe" if os.name == "nt" and not p.get("data") else "")
 
 
 def find(name: str, base_dir: str | None) -> str | None:

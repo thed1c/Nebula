@@ -65,6 +65,7 @@ refuses the page's turns until it is reopened; an API client that keeps writing 
 from __future__ import annotations
 
 import json
+import re
 import os
 import logging
 import time
@@ -162,9 +163,29 @@ def get(server, path: str, query: str, headers=None) -> tuple[int, str, bytes]:
         return _json(200, u.view() if u is not None else {"mode": "off", "current": __version__, "newer": False})
     if path == "/api/otel":                        # OpenTelemetry (nebula/otel.py): off by default, metadata only
         return _json(200, server.otel.view() if getattr(server, "otel", None) is not None else {"enabled": False})
+    if path == "/api/syslog":                      # a syslog server (nebula/syslogfwd.py): off by default
+        return _json(200, server.syslog.view() if getattr(server, "syslog", None) is not None else {"enabled": False})
     if path == "/api/api-servers":                 # the API Server's entry points (nebula/entries.py), each a Quasar
         from nebula import entries as EP
         return _json(200, EP.get(server, path))
+    if path == "/api/starweave/tasks":              # team tasks (nebula/teamtasks.py), newest first
+        from nebula import teamtasks
+        return _json(200, {"tasks": teamtasks.tasks(server)})
+    if path == "/api/starweave":                    # Starweave's profiles, Halo's asks and suggested teams (nebula/profiles.py)
+        from nebula import profiles
+        return _json(200, profiles.view(server.cfg, getattr(server, "policy", None), getattr(server, "ledger", None), getattr(server, "admission", None)))
+    if path == "/api/toolbox":                      # the workspace toolbox (nebula/toolbox.py): its folders, and whether commands can run
+        from nebula import toolbox
+        from nebula.router import Rules
+        return _json(200, toolbox.view(server.cfg, Rules.from_dict(server.cfg.rules)))
+    if path == "/api/skills":                       # Skills (nebula/skill_tools.py): the catalogue, its switches, its suggestions
+        from nebula import skill_tools
+        try:
+            return _json(200, skill_tools.view(server.cfg))
+        except ValueError as e:
+            return _json(400, {"error": str(e)})
+    if path == "/api/runs":                         # command tiers' detached runs (nebula/runs.py): Codex, Claude Code
+        return _json(200, runs_view(server))
     if path == "/api/halo":                         # Halo (nebula/halo.py): its ring, its actions with their undo, its asks
         h = getattr(server, "halo", None)
         return _json(200, h.view() if h is not None else {"on": False, "state": "off"})
@@ -192,7 +213,8 @@ def get(server, path: str, query: str, headers=None) -> tuple[int, str, bytes]:
                            "tiers": [{"name": t.name, "address": t.address, "thinking": t.thinking,
                                       "provider": t.provider, "peer": t.peer, "shared": bool(getattr(t, "shared", False)),
                                       "cloud": bool(gravity.anti_gravity(t)),
-                                      "mesh": getattr(t, "mesh", None), "managed": getattr(t, "managed", None)} for t in cfg.tiers],
+                                      "mesh": getattr(t, "mesh", None), "managed": getattr(t, "managed", None),
+                                      "gravity_peer": gravity.peer_of(t), "hf_name": _hf_name(server, t)} for t in cfg.tiers],
                            "agents": [{"name": a.name, "tier": a.tier, "ceiling": a.ceiling, "tools": list(a.tools),
                                        "models": list(a.models), "default": a.default, "event": a.event} for a in cfg.agents
                                       if not getattr(a, "hidden", False)],
@@ -225,6 +247,8 @@ def get(server, path: str, query: str, headers=None) -> tuple[int, str, bytes]:
         return _json(200, server.admission.status() if getattr(server, "admission", None) else {})
     if path == "/api/sessions":
         return _json(200, ledger.summaries())
+    if path == "/api/team-chats":                   # Starweave: the team's own conversations (one per work item)
+        return _json(200, ledger.team_summaries())
     if path == "/api/registry":
         return _json(200, server.registry.nodes() if getattr(server, "registry", None) else [])
     if path == "/api/lan":
@@ -357,7 +381,16 @@ def add_model(server, req: dict) -> dict:
             raise UiError(400, "a command tier needs a CLI (claude, codex, grok) or a command to run")
         tier.model = str(req.get("model") or "").strip() or None
         tier.cwd = str(req.get("cwd") or "").strip() or None
+        if req.get("writes"):                    # it may change files: only in a folder named for it
+            if not tier.cwd:
+                raise UiError(400, "a command tier that may change files needs its own folder (cwd)")
+            tier.writes = True
         tier.slots = int(req["slots"]) if req.get("slots") else None
+        if req.get("timeout_s"):                 # its own deadline for one call (a long build); engine_timeout_s otherwise
+            t = req["timeout_s"]
+            if isinstance(t, bool) or not isinstance(t, (int, float)) or not 1 <= t <= 86_400:
+                raise UiError(400, "timeout_s is seconds from 1 to 86400")
+            tier.timeout_s = float(t)
         sb = req.get("sandbox")
         if sb:                                   # run it in an OpenShell sandbox (step O1): true, an image, or the object
             from nebula.sandbox import IMAGES, parse_host
@@ -612,6 +645,59 @@ def adopt_engines(server) -> list[dict]:
     return [dict(e, added=e["url"] in have) for e in probe_local_engines()]
 
 
+MONITOR_WAIT_S = 2.5          # a poll waits at most this long for the engines' answers; a slow one says what it last said
+
+
+MONITOR_FRESH_S = 2.5                   # an engine asked this recently is not asked again: every open page shares it
+
+
+def _monitor_probes(server) -> dict:
+    """Each engine's health and props, asked at once (one thread each) instead of one after another: a model that does
+    not answer (a friend's away Nebula: 20 s through the Gravity bridge) no longer holds the whole page's poll. A probe
+    still running from an earlier poll is not started again; its tier reports what it last said."""
+    import threading
+    import time
+    st = server.__dict__.setdefault("_monitor", {"lock": threading.Lock(), "last": {}, "busy": set(), "at": {}})
+
+    def probe(name, eng):
+        try:
+            status, _c, _d = eng.get(getattr(eng, "health_path", "/health"))
+            props = eng.props() if status == 200 else {}
+            res = (status, props, eng.busy() if status == 200 else None, eng.n_ctx())
+        except Exception:  # noqa: BLE001 - a probe that fails is a model that is not up
+            res = (None, {}, None, None)
+        with st["lock"]:
+            st["last"][name] = res
+            st["at"][name] = time.monotonic()
+            st["busy"].discard(name)
+
+    started, g = [], getattr(server, "gravity", None)
+    with st["lock"]:
+        for t in server.cfg.tiers:
+            eng = server.engines.get(t.name)
+            if eng is None or t.name in st["busy"]:
+                continue
+            if time.monotonic() - st["at"].get(t.name, -1e9) < MONITOR_FRESH_S and t.name in st["last"]:
+                continue                                # asked a moment ago (another page, the same page): that answer
+            if getattr(t, "mesh", None) == "gravity-peer" and "/peer/" in (t.engine or ""):
+                # a friend's model: Gravity's own hello (every 20 s) already says whether that Nebula answers and what it
+                # offers; no health call through the bridge (an away friend's took 20 s)
+                seen = (getattr(g, "seen", None) or {}).get(t.engine.rsplit("/peer/", 1)[1]) or {}
+                ok = seen.get("reachable") is True and (t.model in (seen.get("offers") or []) or not seen.get("offers"))
+                st["last"][t.name] = (200, {}, 0, None) if ok else (None, {}, None, None)
+                continue
+            st["busy"].add(t.name)
+            th = threading.Thread(target=probe, args=(t.name, eng), name=f"monitor-{t.name}", daemon=True)
+            started.append(th)
+    for th in started:
+        th.start()
+    end = time.monotonic() + MONITOR_WAIT_S
+    for th in started:
+        th.join(max(0.0, end - time.monotonic()))
+    with st["lock"]:
+        return dict(st["last"])
+
+
 def monitor(server) -> dict:
     out = {"telemetry": None, "engines": [], "sessions": None,
            "errors": server.errors.count() if getattr(server, "errors", None) is not None else 0}
@@ -621,14 +707,14 @@ def monitor(server) -> dict:
             out["telemetry"] = {"now": snap.get("now"), "static": snap.get("static")}
         except Exception as e:  # noqa: BLE001
             out["telemetry"] = {"error": str(e)}
+    probes = _monitor_probes(server)
     for t in server.cfg.tiers:
         eng = server.engines.get(t.name)
         if eng is None:
             continue
-        status, _ctype, _data = eng.get(getattr(eng, "health_path", "/health"))
-        props = eng.props() if status == 200 else {}
+        status, props, busy, n_ctx = probes.get(t.name) or (None, {}, None, None)
         out["engines"].append({"tier": t.name, "address": t.address, "up": status == 200,
-                               "busy": eng.busy() if status == 200 else None, "n_ctx": eng.n_ctx(),
+                               "busy": busy if status == 200 else None, "n_ctx": n_ctx,
                                "slots": props.get("total_slots") if isinstance(props.get("total_slots"), int) else None,
                                "model": props.get("model_alias") or t.model,
                                "unsandboxed": (getattr(getattr(server, "yard", None), "unsandboxed", None) or {}).get(getattr(t, "managed", None) or "")})
@@ -673,7 +759,8 @@ def stream(server, keepalive: float = 15.0, min_gap: float = 0.2):
 
 
 # ------------------------------------------------------------------------------------------------ the look
-LOOK_KEYS = ("pins", "router", "nodes", "widgets", "map", "systems", "worms", "dyson", "showPlan")
+LOOK_KEYS = ("pins", "router", "nodes", "widgets", "map", "systems", "worms", "wormfx", "dyson", "showPlan", "fx", "swarm", "chats",
+             "peers", "pagew")
 LOOK_MAX = 256 * 1024
 
 
@@ -805,6 +892,9 @@ def stars_view(server, headers=None) -> dict:
         "assistant": {"route": (cfg.assistant or {}).get("route") or {}, "choices": ch,
                       "agent": stars.BUILTIN_AGENT if cfg.agent(stars.BUILTIN_AGENT) else None,
                       "tools": stars.enabled_server_names(cfg) if (cfg.assistant or {}).get("tools", True) else [],
+                      "uses_lookup": (cfg.assistant or {}).get("tools", True) is not False,
+                      "soul": (cfg.assistant or {}).get("soul") or "", "system": (cfg.assistant or {}).get("system") or "",
+                      "default_system": stars.DEFAULT_SYSTEM,
                       "requests": counts.get("room", 0)},
         "lookup": {"servers": stars.lookup_view(cfg, getattr(server, "tools", None)), "builtins": stars.BUILTINS,
                    "library": server.library.view() if getattr(server, "library", None) is not None
@@ -820,6 +910,12 @@ def _reload_tools(server) -> None:
     stars.assistant_agent(server.cfg)
     if old is not None:
         old.close()
+
+
+def find_runtime(server) -> str | None:
+    from nebula import halo_engine
+    sv = halo_engine.find_servers(server.cfg.base_dir)
+    return sv[0][0] if sv else None
 
 
 def halo_post(server, path: str, req: dict) -> dict:
@@ -844,6 +940,17 @@ def halo_post(server, path: str, req: dict) -> dict:
                 if req["where"] not in ("gpu", "cpu"):
                     raise UiError(400, "where is gpu or cpu")
                 hs["where"] = req["where"]
+            if "model" in req:                         # Halo › Version: the model Halo thinks with (LFM3, or Omni): a restart
+                eng = getattr(server, "halo_engine", None)
+                ids = [c["id"] for c in (eng.choices_view() if eng is not None else [])]
+                if req["model"] and req["model"] not in ids:
+                    raise UiError(400, f"Halo cannot run {req['model']!r} here (it runs {', '.join(ids) or 'none'})")
+                if req["model"] and ids and req["model"] == next((c["id"] for c in eng.choices_view() if not c["choice"]), None):
+                    hs.pop("model", None)              # the machine's own model: no pick kept
+                elif req["model"]:
+                    hs["model"] = req["model"]
+                else:
+                    hs.pop("model", None)
             if "variant" in req:                       # Standard or Uncensored: the adapter's scale, no reload
                 if req["variant"] not in ("standard", "uncensored"):
                     raise UiError(400, "variant is standard or uncensored")
@@ -856,6 +963,10 @@ def halo_post(server, path: str, req: dict) -> dict:
                 server.halo_engine.set_variant(req["variant"])
             if "where" in req and getattr(server, "halo_engine", None) is not None and server.halo_engine.wrong_place():
                 server.halo_engine.restart()            # placed again: the CPU, or a GPU that has room
+            if "model" in req and getattr(server, "halo_engine", None) is not None:
+                eng = server.halo_engine
+                if (eng.m or {}).get("id") != eng.chosen(find_runtime(server)).get("id"):
+                    eng.restart()                       # on the model picked (its file and adapters fetched first)
             return h.view()
         if path.startswith("/api/halo/actions/") and path.endswith("/undo"):
             h.undo(path[len("/api/halo/actions/"):-len("/undo")])
@@ -886,7 +997,9 @@ def stars_post(server, path: str, req: dict) -> dict:
         if star == "assistant":
             d = dict(cfg.assistant or {})
             if "system" in req:
-                d["system"] = str(req["system"] or "")[:8000] or None
+                d["system"] = str(req["system"] or "")[:16000] or None
+            if "soul" in req:                          # Halo's character (a SOUL.md): first, before its instructions
+                d["soul"] = str(req["soul"] or "")[:16000] or None
             if "tools" in req:
                 d["tools"] = bool(req["tools"])
             cfg.assistant = {k: v for k, v in d.items() if v is not None}
@@ -949,15 +1062,18 @@ SWITCHYARD_RULES = {   # the Switchyard-wide settings the Plan tab edits: name -
     "regenerations_to_rise": ("int", 1, 10), "tool_errors_to_rise": ("int", 1, 20), "escalation_hold_seconds": ("number", 0, 86400),
     "escalation_ignore_outages": ("bool", None, None), "output_reserve_tokens": ("int", 64, 1_000_000), "tolerance_seconds": ("tolerance", None, None),
     "stage_router": ("stage", None, None), "route_rules": ("rules", None, None), "routes": ("routes", None, None),
+    "starweave": ("starweave", None, None), "toolbox": ("toolbox", None, None),
 }
 
 
 def switchyard_rules(cfg) -> dict:
     from nebula.router import Rules
     r = Rules.from_dict(cfg.rules)
-    out = {k: getattr(r, k) for k in SWITCHYARD_RULES if k != "stage_router"}
-    from nebula import stage
+    out = {k: getattr(r, k) for k in SWITCHYARD_RULES if k not in ("stage_router", "starweave", "toolbox")}
+    from nebula import stage, team, toolbox
     out["stage_router"] = stage.settings(r)
+    out["starweave"] = team.settings(r)
+    out["toolbox"] = toolbox.settings(r)
     return out
 
 
@@ -993,6 +1109,20 @@ def check_rules(req: dict) -> dict:
                 v = route_settings.check(v)
             except route_settings.RouteError as e:
                 raise UiError(400, str(e)) from None
+        elif kind == "starweave":
+            from nebula import team
+            try:
+                v = team.check_settings(v)
+            except team.TeamError as e:
+                raise UiError(400, str(e)) from None
+        elif kind == "toolbox":
+            from nebula import toolbox
+            try:
+                toolbox.check_settings(v)
+            except toolbox.BoxError as e:
+                raise UiError(400, str(e)) from None
+            v = {kk: v[kk] for kk in ("mode", "folder", "folders", "off", "image", "run_timeout_s", "max_rounds", "callers", "packages")
+                 if kk in v}
         elif kind == "stage":
             if not isinstance(v, dict):
                 raise UiError(400, "stage_router is an object")
@@ -1029,16 +1159,44 @@ def plan_post(server, path: str, req: dict) -> dict:
         plan, pol, rules = req.get("plan"), req.get("policy"), req.get("rules")
         if not plan and pol is None and rules is None:
             raise UiError(400, "nothing to apply")
+        if isinstance(pol, dict):                # a model's route is one of the routes there will be (nebula/route_settings.py)
+            from nebula import route_settings
+            routes = rules.get("routes") if isinstance(rules, dict) and "routes" in rules else (cfg.rules or {}).get("routes")
+            have = route_settings.names({"routes": routes if isinstance(routes, dict) else {}}) + ["capable"]
+            for name, m in pol.items():
+                st = m.get("stage") if isinstance(m, dict) else None
+                if st is not None and st not in have:
+                    raise UiError(400, f"{name}'s route {st!r} is not one of the routes: {', '.join(have[:-1])}")
         changed = []
         if rules is not None:
             if not isinstance(rules, dict):
                 raise UiError(400, "rules is an object")
             new = check_rules(rules)
+            if "starweave" in new:               # the teams Halo's card saved stay unless this Apply names its own
+                from nebula import contracts
+                old_sw = (cfg.rules or {}).get("starweave") or {}
+                for k in ("teams", "good_at", "tags"):
+                    if k not in new["starweave"] and old_sw.get(k):
+                        new["starweave"] = {**new["starweave"], k: old_sw[k]}
+                got, had = new["starweave"].get("teams"), old_sw.get("teams")
+                if got and had and contracts.all_legacy(got) and not contracts.all_legacy(had):
+                    # the page's per-route cards edit the members of each route's first team; the contracts stay
+                    new["starweave"] = {**new["starweave"], "teams": contracts.merge_route_teams(had, got)}
+                try:
+                    from nebula import route_settings
+                    routes = new["routes"] if "routes" in new else (cfg.rules or {}).get("routes")
+                    contracts.check_all(new["starweave"].get("teams") or {}, [t.name for t in cfg.tiers],
+                                        route_settings.names({"routes": routes if isinstance(routes, dict) else {}})) \
+                        if not contracts.all_legacy(new["starweave"].get("teams") or {}) else None
+                except contracts.ContractError as e:
+                    raise UiError(400, str(e)) from None
             merged = dict(cfg.rules or {})
             merged.update(new)
             cfg.rules = merged
             cfg.raw["rules"] = {**(cfg.raw.get("rules") or {}), **new}
             changed += sorted(new)
+            if "starweave" in new:                    # Halo's team tools follow Star Weaving on or off
+                stars.assistant_agent(cfg)
         if pol is not None:
             if not isinstance(pol, dict):
                 raise UiError(400, "policy is {model: its policy}")
@@ -1100,7 +1258,224 @@ def wsl_memory_post(path: str, req: dict) -> dict:
     raise UiError(404, f"no such path: {path}")
 
 
+def starweave_post(server, path: str, req: dict) -> dict:
+    """Halo's research (only on the owner's OK), skip and forget; a suggested team made, accepted (as it is or as the
+    owner edited it) or dismissed."""
+    from nebula import profiles, team
+    from nebula import yard as Y
+    cfg = server.cfg
+    model = str(req.get("model") or "")
+    tier = cfg.tier(model) if model else None
+    try:
+        if path == "/api/starweave/hf-name":           # a model's Hugging Face name: Halo researches it, friends see it
+            if tier is None:
+                raise UiError(404, f"no model {model!r}")
+            repo = str(req.get("repo") or "").strip().removeprefix("https://huggingface.co/").strip("/")
+            if repo and not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+                raise UiError(400, "a Hugging Face name is owner/name")
+            tier.hf_repo = repo or None
+            for row in cfg.raw.get("tiers") or []:
+                if isinstance(row, dict) and row.get("name") == tier.name:
+                    if repo:
+                        row["hf_repo"] = repo
+                    else:
+                        row.pop("hf_repo", None)
+            if cfg.path:
+                cfg.save()
+            return {"model": tier.name, "hf_name": _hf_name(server, tier)}
+        if path in ("/api/starweave/research", "/api/starweave/skip", "/api/starweave/forget"):
+            if tier is None:
+                raise UiError(404, f"no model {model!r}")
+            if path.endswith("/research"):
+                try:
+                    token = Y.pulls(server).token()
+                except Exception:  # noqa: BLE001 - public cards need no token
+                    token = None
+                profiles.research(cfg, tier, req.get("repo"), token, Y.models_dir(server))
+            elif path.endswith("/skip"):
+                profiles.skip(cfg, model)
+            else:
+                profiles.forget(cfg, model)
+        elif path == "/api/starweave/suggest":
+            profiles.suggest(cfg, getattr(server, "policy", None), getattr(server, "ledger", None))
+        elif path == "/api/starweave/dismiss":
+            profiles.dismiss(cfg)
+        elif path == "/api/starweave/answer":           # the owner's answer to a team's question (a card in the chat)
+            led = getattr(server, "ledger", None)
+            if led is None:
+                raise UiError(503, "no ledger")
+            try:
+                led.answer_owner(str(req.get("item_id") or ""), str(req.get("choice") or "").strip() or "(no answer)")
+            except ValueError as e:
+                raise UiError(400, str(e)) from None
+        elif path == "/api/starweave/probe":            # measure a model on this hardware, at background class
+            if tier is None:
+                raise UiError(404, f"no model {model!r}")
+            profiles.start_probe(server, tier)
+        elif path in ("/api/starweave/contracts/save", "/api/starweave/contracts/delete"):
+            contract_post(server, path, req)
+        elif path == "/api/starweave/contracts/template":   # a draft from a template, for the editor; nothing is saved
+            from nebula import contracts
+            try:
+                draft = contracts.template(str(req.get("template") or ""), lead=req.get("lead") or None,
+                                           helpers=req.get("helpers") or [], reviewer=req.get("reviewer") or None,
+                                           routes=req.get("routes") or [], models=[t.name for t in cfg.tiers])
+            except contracts.ContractError as e:
+                raise UiError(400, str(e)) from None
+            return {**profiles.view(cfg, getattr(server, "policy", None), getattr(server, "ledger", None),
+                                    getattr(server, "admission", None)), "draft": draft}
+        elif path == "/api/starweave/tags":            # a model's tags (the Models tab), shown on Star Weaving's crew
+            if tier is None:
+                raise UiError(404, f"no model {model!r}")
+            sw = dict((cfg.rules or {}).get("starweave") or {})
+            tags = {k: v for k, v in (sw.get("tags") or {}).items() if k != tier.name}
+            if req.get("tags"):
+                tags[tier.name] = req.get("tags")
+            tags = team.check_settings({"tags": tags}).get("tags") or {}
+            if tags:
+                sw["tags"] = tags
+            else:
+                sw.pop("tags", None)
+            cfg.rules = {**(cfg.rules or {}), "starweave": sw}
+            cfg.raw["rules"] = {**(cfg.raw.get("rules") or {}), "starweave": sw}
+            if cfg.path:
+                cfg.save()
+        elif path == "/api/starweave/accept":
+            teams = req.get("teams")
+            sw = team.check_settings(profiles.accept(cfg, teams if isinstance(teams, dict) else None))
+            cfg.rules = {**(cfg.rules or {}), "starweave": sw}
+            cfg.raw["rules"] = {**(cfg.raw.get("rules") or {}), "starweave": sw}
+            if cfg.path:
+                cfg.save()
+        else:
+            raise UiError(404, f"no such path: {path}")
+    except profiles.ProfileError as e:
+        raise UiError(e.status, str(e)) from None
+    except team.TeamError as e:
+        raise UiError(400, str(e)) from None
+    return profiles.view(cfg, getattr(server, "policy", None), getattr(server, "ledger", None), getattr(server, "admission", None))
+
+
+def skills_post(server, path: str, req: dict) -> dict:
+    """Skills (nebula/skill_tools.py): the switches, a pasted SKILL.md, and the owner's answer to a suggested skill.
+    Every one answers with the whole view, so the page redraws from the reply."""
+    from nebula import skill_tools
+    cfg = server.cfg
+    from nebula import skill_hub
+    if path == "/api/skills/search":                   # the skills repositories: the matches, not the whole view
+        try:
+            return skill_hub.search(cfg, str(req.get("q") or ""))
+        except skill_hub.HubError as e:
+            raise UiError(502, str(e)) from None
+    if path == "/api/skills/check":
+        return {**skill_tools.view(cfg), "updates": skill_hub.check(cfg)}
+    if path not in ("/api/skills/settings", "/api/skills/add", "/api/skills/accept", "/api/skills/dismiss",
+                    "/api/skills/link", "/api/skills/update", "/api/skills/remove"):
+        raise UiError(404, f"no such path: {path}")
+    try:
+        if path == "/api/skills/link":
+            warned: list = []                   # the safety scan warned: installed Off (skill_hub.install)
+            name = skill_hub.install(cfg, str(req.get("url") or ""), warnings=warned)
+            return {**skill_tools.view(cfg), "installed": name, "warnings": warned}
+        if path == "/api/skills/remove":
+            skill_hub.remove(cfg, str(req.get("name") or ""))
+            return skill_tools.view(cfg)
+        if path == "/api/skills/update":
+            done, failed = [], {}
+            names = [n for n, u in skill_hub.check(cfg).items() if u.get("update")] if req.get("all") else [str(req.get("name") or "")]
+            warned: dict = {}
+            for n in names:
+                w: list = []
+                try:
+                    done.append(skill_hub.update(cfg, n, warnings=w))
+                except skill_hub.HubError as e:
+                    failed[n] = str(e)
+                if w:
+                    warned[n] = w               # updated, and Off until the owner reads what the scan found
+            if failed and not done and not req.get("all"):
+                raise UiError(400, next(iter(failed.values())))
+            return {**skill_tools.view(cfg), "updated": done, "failed": failed, "warnings": warned}
+        if path == "/api/skills/settings":
+            rules = skill_tools.save_settings(cfg, req)
+            cfg.rules = {**(cfg.rules or {}), "skills": rules}
+            cfg.raw["rules"] = {**(cfg.raw.get("rules") or {}), "skills": rules}
+            if cfg.path:
+                cfg.save()
+        elif path == "/api/skills/add":
+            skill_tools.add_skill(cfg, str(req.get("text") or ""))
+        elif path == "/api/skills/accept":
+            skill_tools.accept_suggested(cfg, str(req.get("name") or ""))
+        else:
+            skill_tools.dismiss_suggested(cfg, str(req.get("name") or ""))
+    except UiError:
+        raise
+    except ValueError as e:
+        raise UiError(400, str(e)) from None
+    return skill_tools.view(cfg)
+
+
+def _hf_name(server, t) -> str | None:
+    """A model's Hugging Face name: the one you gave it, else what its file's place tells (nebula/profiles.py)."""
+    from nebula import profiles
+    try:
+        return profiles.repo_of(server.cfg, t, getattr(getattr(server, "yard", None), "models_dir", lambda: None)())
+    except Exception:  # noqa: BLE001 - a name is a nicety: never a reason for the page to fail
+        return None
+
+
+def runs_view(server) -> dict:
+    """The latest detached runs, newest first, with their answers cut short."""
+    from nebula import runs
+    out = []
+    for r in runs.runs(server.cfg.base_dir, 30):
+        res = r.pop("result", None) or {}
+        r["answer"] = (res.get("content") or "")[:400]
+        out.append(r)
+    return {"runs": out, "running": sum(1 for r in out if r["state"] == "running")}
+
+
+def runs_post(server, path: str, req: dict) -> dict:
+    """Cancel a run, or read the tail of its output."""
+    import os as _os
+    from nebula import runs
+    run_id = str(req.get("run_id") or "")
+    try:
+        if path == "/api/runs/cancel":
+            runs.cancel(server.cfg.base_dir, run_id)
+            return runs_view(server)
+        if path == "/api/runs/log":
+            folder = runs.folder_of(server.cfg.base_dir, run_id)
+            runs.inspect(server.cfg.base_dir, run_id)
+            out = {}
+            for name, keep in (("stdout", 6000), ("stderr", 3000)):
+                try:
+                    with open(_os.path.join(folder, name + ".log"), "rb") as f:
+                        f.seek(0, 2)
+                        f.seek(max(0, f.tell() - keep))
+                        out[name] = f.read().decode("utf-8", "replace")
+                except OSError:
+                    out[name] = ""
+            return out
+    except runs.RunError as e:
+        raise UiError(404, str(e)) from None
+    raise UiError(404, f"no {path}")
+
+
 def post(server, path: str, engine, ctx: Context, req: dict):
+    if path.startswith("/api/runs/"):
+        return JsonReply(200, runs_post(server, path, req))
+    if path == "/api/starweave/tasks":              # start a team task: {goal, team?, route?, lead?, folder?}
+        from nebula import teamtasks
+        try:
+            t = teamtasks.start(server, str(req.get("goal") or ""), route=req.get("route") or None, lead=req.get("lead") or None,
+                                folder=req.get("folder") or None, team=req.get("team") or None)
+        except teamtasks.TaskError as e:
+            raise UiError(400, str(e)) from None
+        return JsonReply(200, {"task": t})
+    if path.startswith("/api/starweave/"):
+        return JsonReply(200, starweave_post(server, path, req))
+    if path.startswith("/api/skills/"):
+        return JsonReply(200, skills_post(server, path, req))
     if path.startswith("/api/wsl/memory"):
         return JsonReply(200, wsl_memory_post(path, req))
     if path.startswith("/api/halo"):
@@ -1128,6 +1503,21 @@ def post(server, path: str, engine, ctx: Context, req: dict):
         if server.cfg.path:
             server.cfg.save()
         return JsonReply(200, server.otel.view())
+    if path in ("/api/syslog", "/api/syslog/test"):
+        from nebula import syslogfwd
+        fw = getattr(server, "syslog", None)
+        if fw is None:
+            raise UiError(503, "the syslog forwarder is not running")
+        try:
+            if path == "/api/syslog/test":
+                return JsonReply(200, {**fw.view(), **fw.test()})
+            server.cfg.raw["syslog"] = syslogfwd.check(req, syslogfwd.settings(server.cfg))
+        except syslogfwd.SyslogError as e:
+            raise UiError(400, str(e)) from None
+        if server.cfg.path:
+            server.cfg.save()
+        fw.apply()
+        return JsonReply(200, fw.view())
     if path.startswith("/api/api-servers"):
         from nebula import entries as EP
         try:
@@ -1376,3 +1766,43 @@ def chat_post(server, ctx: Context, req: dict):
 
     sid = row["session_id"] if row else ""
     return SseReply(rest(), {"X-Nebula-Session-Id": sid, "X-Cockpit-Session-Id": sid})
+
+
+def contract_post(server, path: str, req: dict) -> None:
+    """A team's contract saved ({id, contract, was?}: checked as Routes' Apply checks, a rename when `was` is another
+    id) or deleted ({id}). Running tasks keep the contract they started with (nebula/contracts.py)."""
+    from nebula import contracts, stars
+    cfg = server.cfg
+    sw = dict((cfg.rules or {}).get("starweave") or {})
+    teams = dict(sw.get("teams") or {})
+    if contracts.all_legacy(teams):                 # the first save turns the older per-route teams into contracts
+        teams = contracts.first_contracts(sw)
+    key = str(req.get("id") or "").strip()
+    if path.endswith("/delete"):
+        if key not in teams:
+            raise UiError(404, f"no team {key!r}")
+        teams.pop(key)
+    else:
+        raw = req.get("contract")
+        was = str(req.get("was") or "").strip()
+        try:
+            from nebula import route_settings
+            clean = contracts.check(key, raw, [t.name for t in cfg.tiers], route_settings.names(cfg.rules or {}))
+        except contracts.ContractError as e:
+            raise UiError(400, str(e)) from None
+        if was and was != key:
+            if key in teams:
+                raise UiError(400, f"there is already a team {key!r}")
+            teams = {(key if k == was else k): (clean if k == was else v) for k, v in teams.items()}
+            if key not in teams:
+                teams[key] = clean
+        else:
+            if key not in teams and len(teams) >= contracts.MAX_TEAMS:
+                raise UiError(400, f"at most {contracts.MAX_TEAMS} teams")
+            teams[key] = clean
+    sw["teams"] = teams
+    cfg.rules = {**(cfg.rules or {}), "starweave": sw}
+    cfg.raw["rules"] = {**(cfg.raw.get("rules") or {}), "starweave": sw}
+    if cfg.path:
+        cfg.save()
+    stars.assistant_agent(cfg)                      # Halo's start_task lists the teams by what they are for

@@ -47,6 +47,32 @@ class FormsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_command("gemini", None, None, None, "/p", "/o")
 
+    def test_writes_lets_the_cli_change_files(self):
+        argv, _s, _h = build_command("codex", None, None, None, "/p", "/o")
+        self.assertEqual(argv[argv.index("-s") + 1], "read-only")
+        argv, _s, _h = build_command("codex", None, None, None, "/p", "/o", writes=True)
+        self.assertEqual(argv[argv.index("-s") + 1], "workspace-write")
+        argv, _s, _h = build_command("claude", None, None, None, "/p", "/o", writes=True)
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "acceptEdits")
+        self.assertNotIn("--permission-mode", build_command("claude", None, None, None, "/p", "/o")[0])
+
+    def test_writes_needs_a_folder_of_its_own(self):
+        from nebula.config import Tier
+        self.assertFalse(CommandEngine(Tier(name="c", cli="codex", writes=True)).writes)
+        self.assertTrue(CommandEngine(Tier(name="c", cli="codex", writes=True, cwd="/tmp/wt")).writes)
+        self.assertEqual(Tier.from_dict({"name": "c", "cli": "codex", "writes": True, "cwd": "/w"}).writes, True)
+
+    def test_a_command_tier_keeps_its_own_deadline(self):
+        from types import SimpleNamespace
+        from nebula.config import Config, Tier
+        from nebula.server import reload_models
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Config(tiers=[Tier(name="long", cli="codex", timeout_s=3600), Tier(name="short", cli="codex")])
+            cfg.base_dir = d
+            srv = SimpleNamespace(cfg=cfg, policy=None, pairing=None)
+            reload_models(srv)
+            self.assertEqual((srv.engines["long"].timeout_s, srv.engines["short"].timeout_s), (3600.0, cfg.engine_timeout_s))
+
     def test_prompt_and_claude_output(self):
         self.assertEqual(prompt_from_messages([{"role": "system", "content": "S"}, {"role": "user", "content": "one"}]), ("S", "one"))
         system, prompt = prompt_from_messages([{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}, {"role": "user", "content": "c"}])

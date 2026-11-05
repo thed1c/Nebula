@@ -30,6 +30,15 @@ LOG = logging.getLogger("nebula.halo")
 HALO_TURN: contextvars.ContextVar = contextvars.ContextVar("nebula_halo_turn", default=False)
 AGENT = "halo"
 OWNER = "owner"
+LOOPBACK = ("127.0.0.1", "::1", "localhost")
+
+
+def routine(r: dict) -> bool:
+    """An event Halo need not think about (it stays in the security log): on this machine itself, a sign-in that
+    worked, as after every restart, or the page's API asked before the browser signed in (auth.signin: answered "sign
+    in first", nothing a guard could stop). A sign-in from another device, a wrong PIN or anything unusual still
+    reaches it."""
+    return r.get("kind") in ("signin.ok", "auth.signin") and str(r.get("who") or "").split("%")[0] in LOOPBACK
 
 SYSTEM = """You are Halo, the guardian of this Nebula, a personal AI switchyard. You read its security log and protect
 it from misuse by guests (other people's apps holding a caller key, and other Nebulas joined over Gravity).
@@ -78,6 +87,7 @@ class Halo:
         self.why = None
         self.actions: list[dict] = []
         self.asks: list[dict] = []
+        self.notes: list[dict] = []                       # what Halo tells the owner (a team task done or stopped)
         self.last_run = None
         self.last_note = None
         self.seen_seq = server.seclog.last_seq() if server.seclog is not None else 0
@@ -105,6 +115,7 @@ class Halo:
             with open(self.path, encoding="utf-8") as f:
                 d = json.load(f)
             self.actions, self.asks, self.seen_seq = d.get("actions") or [], d.get("asks") or [], int(d.get("seen_seq") or self.seen_seq)
+            self.notes = d.get("notes") or []
             if self._trouble():
                 self.state = self._trouble()
         except (OSError, ValueError):
@@ -115,7 +126,7 @@ class Halo:
             return
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"actions": self.actions[-500:], "asks": self.asks[-200:], "seen_seq": self.seen_seq}, f)
+            json.dump({"actions": self.actions[-500:], "asks": self.asks[-200:], "notes": self.notes[-200:], "seen_seq": self.seen_seq}, f)
         os.replace(tmp, self.path)
 
     # --- life
@@ -169,7 +180,7 @@ class Halo:
         if log is None:
             return []
         return [r for r in log.read(since_seq=self.seen_seq, min_severity="notice", limit=200)
-                if r["who"] != OWNER and not r["kind"].startswith("halo.")]
+                if r["who"] != OWNER and not r["kind"].startswith("halo.") and not routine(r)]
 
     def check(self) -> dict:
         """One look: nothing new is calm; something new goes to the model with Halo's tools."""
@@ -190,11 +201,14 @@ class Halo:
         self.state = "pulse"
         digest = "\n".join(f"#{r['seq']} {time.strftime('%H:%M:%S', time.localtime(r['last_at']))} {r['kind']} who={r['who']} "
                            f"what={r['what']} x{r['count']} {json.dumps(r['detail'], ensure_ascii=False)[:200]}" for r in reversed(new))
+        self.look = secrets.token_hex(8)
         text = self._ask_model(f"New security events since you last looked (oldest first):\n{digest}\n\n"
                                f"Guards now in place: {json.dumps(self.server.guard.view())}\nDecide.")
         self.last_run, self.last_note, self.why = time.time(), (text or "")[:500], None
         self.seen_seq = top
         acted = len(self.actions) + len(self.asks) > before
+        if acted and self.server.ledger is not None:   # abnormal: Halo took a step or asks you, so its chat opens for you
+            self.server.ledger.show_halo_look(self.look)
         self.state = self._trouble() or "glow"
         self._save()
         return {"looked": len(new), "acted": acted, "note": self.last_note}
@@ -217,13 +231,15 @@ class Halo:
             from nebula.engine import Engine
             cfg = copy.copy(cfg)
             cfg.tiers = [own.tier]
-            tier = own.tier.name
+            cfg.default_models = []                     # the owner's default ticks name the routed models, never Halo's
+            tier = own.tier.name                        # own: with them it had no model at all (every look failed)
             engines = {tier: Engine(own.tier.address, float(srv.cfg.engine_timeout_s), model=own.tier.model, context=own.tier.context,
                                     api_key=getattr(own, "api_key", None))}
         else:
             tier = stars.route_of(cfg, "assistant")[0]
         req = {"messages": [{"role": "user", "content": prompt}], "stream": False, **({"model": tier} if tier else {})}
-        ctx = Context(cfg, srv.ledger, {"X-Nebula-Agent": AGENT, "X-Nebula-Caller": "halo"}, engines, srv.tools, input="halo",
+        ctx = Context(cfg, srv.ledger, {"X-Nebula-Agent": AGENT, "X-Nebula-Caller": "halo", "X-Nebula-Halo-Look": getattr(self, "look", "")},
+                      engines, srv.tools, input="halo",
                       caller={"id": None, "label": "halo", "guest": False}, priority="interactive",
                       registry=srv.registry if engines is srv.engines else None, admission=srv.admission, lot=srv.lot,
                       policy=srv.policy, yard=srv.yard,
@@ -259,6 +275,14 @@ class Halo:
         if self.server.seclog is not None:
             self.server.seclog.add("halo.ask", "halo", None, id=q["id"], message=q["message"][:300])
         return q
+
+    def notify(self, title: str, text: str, **extra) -> dict:
+        """Tell the owner something (the Mission Log shows it until they dismiss it): a team task done or stopped."""
+        n = {"id": secrets.token_hex(4), "at": time.time(), "title": str(title)[:200], "text": str(text)[:4000], **extra}
+        with self.lock:
+            self.notes.append(n)
+            self._save()
+        return n
 
     def undo(self, action_id: str) -> dict:
         a = next((x for x in self.actions if x["id"] == action_id), None)
@@ -297,6 +321,7 @@ class Halo:
         return {"on": st["on"], "state": self.state if st["on"] else "off", "why": self.why, "route": st["route"],
                 "last_run": self.last_run, "last_note": self.last_note,
                 "actions": list(reversed(self.actions[-100:])), "asks": list(reversed(self.asks[-50:])),
+                "notes": list(reversed(self.notes[-50:])),
                 "guard": self.server.guard.view(),
                 "own_model": self.server.halo_engine.view() if getattr(self.server, "halo_engine", None) is not None else None}
 

@@ -21,20 +21,20 @@
    }
   },
   "impulse-legacy": {
-   "version": "0.1.7",
+   "version": "0.2.0",
    "label": "Impulse (L)",
-   "why": "the engine for older NVIDIA cards (Maxwell, Pascal, Volta: GTX 900 and 10 series, Titan X / Xp / V, Tesla M, P and V100), which Impulse's main build cannot run",
+   "why": "the engine for older NVIDIA cards (Maxwell, Pascal, Volta: GTX 900 and 10 series, Titan X / Xp / V, Tesla M, P and V100), which Impulse's main build cannot run, and for an older card working beside a newer one",
    "program": "impulse-server",
    "files": {
     "linux-x86_64": {
      "ext": "tar.xz",
-     "sha256": "e1d3f92a8004cf1fc546d8f2d5a20b061d2e6f4af7d47d22ddd90be1782659f3",
-     "bytes": 493689964
+     "sha256": "84dd9ae184c94bd5a9a88520c8ac517d850ec20d7c04a80f98b858744d489b1b",
+     "bytes": 617193876
     },
     "windows-x86_64": {
      "ext": "zip",
-     "sha256": "a1222146b81e8a2d3d2dd86bc931c11369d7484741e6c89d5022b74fc1fe1783",
-     "bytes": 614731030
+     "sha256": "01bf27643e56ad0bc46ec2b0432e32bbdce696e08f8b28b773f1f15f0f68a96a",
+     "bytes": 739134139
     }
    }
   },
@@ -52,6 +52,20 @@
      "ext": "zip",
      "sha256": "",
      "bytes": 0
+    }
+   }
+  },
+  "halo-omni": {
+   "version": "0.2.0",
+   "label": "Halo Omni's adapters",
+   "data": true,
+   "why": "Halo's two adapters for LFM3-Omni-2B (Halo › Version › Omni); the model file itself comes from Hugging Face",
+   "program": "halo-omni-v1-r16-lora-f16.gguf",
+   "files": {
+    "any": {
+     "ext": "tar.gz",
+     "sha256": "3644b6df927f3cd4ee2a5c5133cc15276b7fc9ca9dac07387e7c67fc0c5a65f3",
+     "bytes": 30663900
     }
    }
   }

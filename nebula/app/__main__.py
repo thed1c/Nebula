@@ -72,6 +72,8 @@ def main(argv=None) -> int:
     try:
         raw = json.loads(Path(config).read_text(encoding="utf-8"))
         cfg = Config.from_args(["--config", config, *rest])
+        from nebula.__main__ import add_log_file
+        add_log_file(cfg)                                       # warnings and errors kept in NAME.log beside the config
         if cfg.ledger and not os.path.isabs(cfg.ledger) and "--ledger" not in rest:
             cfg.ledger = str(Path(cfg.base_dir) / cfg.ledger)
         app_cfg = dict(raw.get("app") or {})

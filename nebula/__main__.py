@@ -18,6 +18,43 @@ def local_call(cfg, path: str, body: dict) -> dict:
         return json.loads(r.read())
 
 
+def log_to_file(cfg) -> str | None:
+    """Warnings and errors go to NAME.log beside the config (2 MB, two older files kept) and to stderr, as before: the
+    desktop window keeps only the last 40 lines of what the server prints, so a traceback was lost with the window."""
+    import logging
+    root = logging.getLogger()
+    if root.handlers:                                  # a caller (the desktop app, a test) set logging up already
+        return None
+    err = logging.StreamHandler()
+    err.setLevel(logging.WARNING)
+    err.setFormatter(logging.Formatter("%(name)s: %(message)s"))
+    root.addHandler(err)
+    root.setLevel(logging.WARNING)
+    return add_log_file(cfg)
+
+
+def add_log_file(cfg) -> str | None:
+    """NAME.log beside the config: warnings and errors, 2 MB, two older files kept. Its path, or None without a config."""
+    import logging
+    import logging.handlers
+    import os
+    path = getattr(cfg, "path", None)
+    if not path:
+        return None
+    log = os.path.splitext(str(path))[0] + ".log"
+    root = logging.getLogger()
+    if any(getattr(h, "baseFilename", None) == os.path.abspath(log) for h in root.handlers):
+        return log
+    try:
+        h = logging.handlers.RotatingFileHandler(log, maxBytes=2 * 2**20, backupCount=2, encoding="utf-8")
+    except OSError:
+        return None
+    h.setLevel(logging.WARNING)
+    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root.addHandler(h)
+    return log
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     cmd = argv.pop(0) if argv and argv[0] in ("serve", "invite", "accept") else None
@@ -47,11 +84,27 @@ def main(argv=None) -> int:
         net = cfg.raw.setdefault("network", {})
         net.setdefault("enabled", True)
         net["role"] = "server"
+    log_to_file(cfg)
+    import signal
+
+    held = {}
+
+    def _stop(*_a):                              # the window closing (SIGTERM): the same orderly close as Ctrl+C, so
+        if held.get("srv") is not None:          # running team work is marked stopped while the ledger is still open;
+            held["srv"].keep_engines = True      # the engines it started keep running (a window close, a restart or
+        raise KeyboardInterrupt                  # an update must not take a model down on another machine)  
+    try:
+        signal.signal(signal.SIGTERM, _stop)
+    except (ValueError, OSError):                # not the main thread (a test), or no such signal here
+        pass
     try:
         srv = make_server(cfg)
     except LedgerInUse as e:
         print(f"nebula: {e}", file=sys.stderr, flush=True)
         return 1
+    except KeyboardInterrupt:                    # closed while it was still starting
+        return 0
+    held["srv"] = srv
     if cfg.tiers:
         target = f"engine {cfg.engine}"
     elif not cfg.watch:

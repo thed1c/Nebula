@@ -59,7 +59,17 @@ that folder's README). Which one depends on what runs it (the owner's 2026-10-30
 A machine fetches only the model it runs (the installer while it unpacks, or Nebula at start), and says which and why. An NVIDIA
 machine that already has Halo v2's file (an update from 0.1.4) keeps Halo v2 running while LFM3's file downloads, then moves to
 it; when that download fails, or the Impulse there cannot run LFM3 yet, Halo v2 stays. `NEBULA_HALO_MODEL` forces one
-(`halo-lfm3-1.7b`, `halo-lfm25-1.2b`).
+(`halo-lfm3-1.7b`, `halo-lfm25-1.2b`, `halo-omni-2b`).
+
+**Halo Omni, by your pick** (Halo › Version › Model, `"assistant": {"halo": {"model": "halo-omni-2b"}}`): Halo Omni v1 on
+LiquidAI's LFM3-Omni-2B (1.0 GB, Impulse with an NVIDIA card). In the November 2026 tests it handed work to a team more often
+when a team should do it (36 of 75 against 25) and guarded a little less surely (322 of 330 test looks against 329); pictures
+and sound are not used yet. Never chosen by itself, and never Halo's fallback. Its base runs as a copy with one fix: its chat
+template's `carry.items` clashes with the template engine's built-in `items` (tool calls fail with HTTP 400), so Nebula renames
+it `carry.parts` (equal length, every other byte the same) after the pinned download, checks the copy against its sha256 and
+removes the original. Its two adapters are not in the installer: a release file of their own (`halo-omni` in
+`nebula/catalog/pieces.json`, 33 MB, sha256 checked), downloaded when you pick Omni. While its model file comes, the model Halo
+ran keeps running; Halo moves to Omni once it is in place.
 
 - **Standard**: the base + the Halo adapter (the guard, the router judge, handoff briefings).
 - **Uncensored**: the same + the Uncensored adapter. Both are always loaded; the setting is the second adapter's scale (0 or 1),

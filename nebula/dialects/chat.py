@@ -32,7 +32,7 @@ def chat(engine, ctx, req: dict):
                                 thinking_requested=thinking)
     options = req.get("stream_options") if isinstance(req.get("stream_options"), dict) else {}
     want_usage = bool(options.get("include_usage"))
-    if turn.agent is not None:
+    if turn.agent is not None or turn.team_tools or turn.skill_tools:  # cockpit-owned tools need the tool loop
         if not req.get("stream"):
             events = list(turn.run(engine, body))
             return JsonReply(200, completion_from(events, turn.done, model))

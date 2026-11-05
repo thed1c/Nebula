@@ -12,7 +12,9 @@ Kept beside the config as `NAME.routing.json` (in memory without a config file),
   time, days 0 = Monday, `to` before `from` runs past midnight); `calls_per_hour` counts the calls this Nebula sent it.
   A model that is off, out of its hours or over its hourly count is left off the ladder, and a request that names it
   is refused with the reason.
-- The ladder is ordered `prefer` first, then `priority` (1 first, 9 last, 5 by default), else the config's order.
+- The ladder is ordered `prefer` first, then `priority` (1 first, 9 last, 5 by default), else the config's order. A
+  chosen list (the default models, an agent's, a request's) keeps its own order after `prefer`; `priority` orders the
+  models of a route among themselves when smart routing or a rule puts that route first.
 - `slots` (capacity) and `limits.max_concurrent` narrow the model's gate; `vision` overrides what its engine reports;
   `thinking` overrides its tier's thinking; `limits.max_output_tokens` caps what a call may ask of it.
 - `advertise` is what each wormhole carries: per paired Nebula (its uuid), the names of this Nebula's own models it
@@ -110,8 +112,8 @@ def _check_model(name: str, m) -> dict:
                 raise PolicyError(f"{name}.wait_s is 0 to 3600 seconds")
             out["wait_s"] = v
         elif k == "stage":                              # the stage router's tier (nebula/stage.py)
-            if v not in STAGES:
-                raise PolicyError(f"{name}.stage is one of everyday, larger, writing, critique")
+            if v not in STAGES and not (isinstance(v, str) and re.fullmatch(r"[a-z][a-z0-9-]{1,30}", v)):
+                raise PolicyError(f"{name}.stage is a route: everyday, larger, writing, critique, or one of your own")
             out["stage"] = "larger" if v == "capable" else v
         elif k == "expect_model":                       # readiness: the loaded file's name must contain this
             if not isinstance(v, str) or len(v) > 160:
@@ -226,6 +228,10 @@ class Policy:
             m = self.model(t.name)
             return (0 if m.get("prefer") else 1, m.get("priority", 5), i)
         return [t for _i, t in sorted(enumerate(tiers), key=key)]
+
+    def kept(self, tiers: list) -> list:
+        """A chosen list (Any task, a helper's own, a request's): "ask first" models first, else the list's own order."""
+        return [t for _i, t in sorted(enumerate(tiers), key=lambda it: (0 if self.model(it[1].name).get("prefer") else 1, it[0]))]
 
     def slots(self, name: str, reported):
         m = self.model(name)

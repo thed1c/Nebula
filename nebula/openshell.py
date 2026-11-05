@@ -24,11 +24,18 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 
 HOST = "host.openshell.internal"
 # An engine's policy: nothing out (an engine needs no network), the system read-only, the models (and a Hugging Face
 # cache, and its own key) read-only, a scratch folder, and a user that is not root. Checked on OpenShell 0.1.4
 # (2026-10-20): the process cannot list /, write /etc or /models, or reach a host.
+
+def _read_text(path: str) -> str:
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
 def policy_text(uid: int | None = None, devices: list[str] | None = None) -> str:
     """The policy for an engine's sandbox. Its user: the owner's own (not root) when the engine has a key to read (a
     file only the owner can read), else 65534 (nobody). `devices`: the card's device nodes it may open (the Podman
@@ -78,8 +85,8 @@ def run(args: list[str], exe: str | None = None, timeout: float = 120, gateway: 
     return p.stdout
 
 
-def _json(args, exe=None):
-    out = run(args + ["-o", "json"], exe)
+def _json(args, exe=None, gateway: str | None = None, timeout: float = 120):
+    out = run(args + ["-o", "json"], exe, timeout=timeout, gateway=gateway)
     try:
         return json.loads(out) if out.strip() else []
     except ValueError:
@@ -137,6 +144,42 @@ def panel(exe: str | None = None) -> dict:
         except OpenShellError as e:
             out[key], out[key + "_error"] = [], str(e)
     return out
+
+
+_BY_GATEWAY: dict = {"at": 0.0, "gateways": {}, "busy": False}
+_BY_GATEWAY_LOCK = threading.Lock()
+
+
+def by_gateway(exe: str | None = None, max_age_s: float = 20.0) -> dict:
+    """Each registered gateway's sandboxes (the Machines list shows them on their machine): {name: {"sandboxes", "error"}},
+    read in the background at most every `max_age_s` (a model machine that does not answer never holds the page)."""
+    with _BY_GATEWAY_LOCK:
+        stale = time.time() - _BY_GATEWAY["at"] > max_age_s
+        if stale and not _BY_GATEWAY["busy"] and binary(exe) is not None:
+            _BY_GATEWAY["busy"] = True
+            threading.Thread(target=_read_by_gateway, args=(exe,), name="openshell-gateways", daemon=True).start()
+        return {"gateways": {k: dict(v) for k, v in _BY_GATEWAY["gateways"].items()}, "at": _BY_GATEWAY["at"] or None}
+
+
+def _read_by_gateway(exe: str | None) -> None:
+    out: dict = {}
+    try:
+        for g in _rows(_json(["gateway", "list"], exe, timeout=15), "gateways"):
+            name = g.get("name")
+            if not name:
+                continue
+            try:
+                rows = _rows(_json(["sandbox", "list"], exe, gateway=name, timeout=10), "sandboxes")
+                out[name] = {"sandboxes": [{k: r.get(k) for k in ("name", "phase", "status", "message", "reason")} for r in rows], "error": None}
+            except OpenShellError as e:
+                out[name] = {"sandboxes": [], "error": str(e)[:200]}
+    except OpenShellError as e:
+        out = {"": {"sandboxes": [], "error": str(e)[:200]}}
+    finally:
+        with _BY_GATEWAY_LOCK:
+            if out:
+                _BY_GATEWAY["gateways"] = out
+            _BY_GATEWAY["at"], _BY_GATEWAY["busy"] = time.time(), False
 
 
 def policy(name: str, exe: str | None = None) -> dict:
@@ -313,7 +356,7 @@ def deploy_argv(spec: dict, inner_cmd: list[str], card_index, volume: str, polic
 def ram_gib(meminfo: str | None = None) -> int:
     """This machine's RAM in GiB (MemTotal), or of the machine whose /proc/meminfo is given."""
     try:
-        text = meminfo if meminfo is not None else open("/proc/meminfo", encoding="utf-8").read()
+        text = meminfo if meminfo is not None else _read_text("/proc/meminfo")
         kb = int(re.search(r"MemTotal:\s+(\d+)", text).group(1))
         return max(1, kb // (1024 * 1024))
     except (OSError, AttributeError, ValueError):
@@ -542,7 +585,7 @@ def device_nodes(cdi_json: str, indices) -> list[str]:
 
 def local_cdi_json() -> str:
     try:
-        return open("/etc/cdi/nvidia-podman.json", encoding="utf-8").read()
+        return _read_text("/etc/cdi/nvidia-podman.json")
     except OSError:
         p = subprocess.run(["nvidia-ctk", "cdi", "generate", "--format=json"], capture_output=True, text=True, timeout=60) \
             if shutil.which("nvidia-ctk") else None

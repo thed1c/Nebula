@@ -112,3 +112,105 @@ class ServerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OwnRoutesTest(unittest.TestCase):
+    """Routes of the owner's own (Star Calling's "Add a new route") and each route's kind: checked, said to Halo with
+    their words, a model put on one, a rule sending to one, and a thinking route's answers thinking."""
+    ROUTES = {"pictures": {"name": " Pictures ", "about": "photos and screenshots", "kind": ["vision", "thinking"]},
+              "larger": {"kind": ["no_thinking"], "instructions": "Show your steps."}}
+
+    def test_check_names_kinds_and_order(self):
+        out = RS.check(self.ROUTES)
+        self.assertEqual(out["pictures"], {"name": "Pictures", "about": "photos and screenshots", "kind": ["thinking", "vision"]})
+        rules = {"routes": out}
+        self.assertEqual(RS.names(rules), ["everyday", "larger", "writing", "critique", "pictures"])
+        self.assertEqual(RS.label(rules, "pictures"), "Pictures")
+        self.assertEqual(RS.words(rules, "pictures"), "photos and screenshots (for requests with pictures)")
+        self.assertEqual(RS.words(rules, "writing", {"writing": "stories"}), "stories")
+        self.assertIs(RS.thinking(rules, "pictures"), True)
+        self.assertIs(RS.thinking(rules, "larger"), False)
+        self.assertIsNone(RS.thinking(rules, "everyday"))
+        for bad in ({"Moon Base": {"name": "x"}}, {"moon": {"about": "no name"}}, {"moon": {"name": "M", "kind": ["flying"]}},
+                    {"moon": {"name": "M", "kind": ["thinking", "no_thinking"]}}, {"moon": {"name": "M" * 41}},
+                    {f"r{i:02d}": {"name": "x"} for i in range(RS.MAX_ROUTES + 1)}):
+            with self.assertRaises(RS.RouteError):
+                RS.check(bad)
+
+    def test_a_model_on_an_own_route_and_halo_hears_its_words(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from nebula import policy as P, stage
+        from nebula.router import Rules
+        pol = P.Policy()
+        pol.put({"models": {"eye": {"stage": "pictures"}, "small": {}}})
+        self.assertEqual(pol.stage("eye"), "pictures")
+        with self.assertRaises(P.PolicyError):
+            pol.put({"models": {"eye": {"stage": "Not A Route"}}})
+        rules = Rules(); rules.routes = RS.check(self.ROUTES); rules.stage_router = {"mode": "live", "judge": "halo"}
+        tiers = [SimpleNamespace(name="small"), SimpleNamespace(name="eye")]
+        turn = SimpleNamespace(rules=rules, policy=pol, pinned=False, passthrough=False, ladder=list(tiers),
+                               req={"messages": [{"role": "user", "content": "what is in this photo?"}]})
+        seen = {}
+        def halo(req, routes, timeout=12.0, words=None):
+            seen.update(routes=routes, words=words)
+            return {"route": "pictures", "why": "a photo", "model": "halo", "seconds": 0.1}
+        with mock.patch.object(stage, "ask_halo", halo):
+            got = stage.pick(turn, 100)
+        self.assertEqual(seen["routes"], ["everyday", "pictures"])
+        self.assertEqual(seen["words"]["pictures"], "photos and screenshots (for requests with pictures)")
+        self.assertEqual(got["picked"], "pictures")
+        self.assertEqual([t.name for t in turn.ladder], ["eye", "small"])
+        turn.stage, turn.routed = got, None
+        self.assertEqual(RS.route_of(turn, "eye"), "pictures")
+        self.assertEqual(RS.route_of(SimpleNamespace(rules=Rules(), policy=pol), "eye"), "everyday")    # removed: everyday
+
+    def test_a_rule_sends_to_an_own_route(self):
+        from types import SimpleNamespace
+        from nebula import policy as P, route_rules
+        from nebula.router import Rules
+        pol = P.Policy(); pol.put({"models": {"eye": {"stage": "pictures"}}})
+        rules = Rules(); rules.routes = RS.check(self.ROUTES)
+        rules.route_rules = [{"name": "photos", "if": [{"what": "pictures", "is": False}], "then": {"to": "pictures"}}]
+        tiers = [SimpleNamespace(name="small"), SimpleNamespace(name="eye")]
+        turn = SimpleNamespace(rules=rules, policy=pol, pinned=False, ladder=list(tiers), req={"messages": [{"role": "user", "content": "hi"}]},
+                               caller=None, agent=None, tools=None)
+        out = route_rules.apply(turn, 10, None, None)
+        self.assertTrue(out and out["moved"], out)
+        self.assertEqual([t.name for t in turn.ladder], ["eye", "small"])
+
+
+class AnyTaskOrderTest(unittest.TestCase):
+    """Star Calling's rows say "left to right": a chosen list (Any task, a helper's own) keeps its order (after "ask
+    first"), and a route put first by smart routing keeps its own order (its models' priority)."""
+    def test_a_chosen_list_keeps_its_order_and_a_route_its_own(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from nebula import policy as P, stage
+        from nebula.router import Rules
+        pol = P.Policy()
+        pol.put({"models": {"a": {"priority": 1}, "b": {"priority": 2, "stage": "larger"}, "c": {"priority": 1, "stage": "larger"},
+                            "d": {"prefer": True, "priority": 9}}})
+        T = [SimpleNamespace(name=n) for n in ("b", "a", "c", "d")]
+        self.assertEqual([t.name for t in pol.kept(T)], ["d", "b", "a", "c"])          # ask first, then the list's order
+        self.assertEqual([t.name for t in pol.order(T)], ["d", "a", "c", "b"])          # no list chosen: priority
+        rules = Rules(); rules.stage_router = {"mode": "live", "judge": "halo"}
+        turn = SimpleNamespace(rules=rules, policy=pol, pinned=False, passthrough=False, ladder=pol.kept(T),
+                               req={"messages": [{"role": "user", "content": "debug this"}]})
+        with mock.patch.object(stage, "ask_halo", lambda req, routes, timeout=12.0, words=None: {"route": "larger", "why": "code", "model": "halo", "seconds": 0}):
+            stage.pick(turn, 10)
+        self.assertEqual([t.name for t in turn.ladder], ["c", "b", "d", "a"])            # the route by its order, then the list
+
+
+class PutAwayTest(unittest.TestCase):
+    """Star Calling shows the built-in routes but everyday as suggestions: one put away is out of smart routing until it
+    is brought back; everyday stays."""
+    def test_a_suggested_route_put_away(self):
+        out = RS.check({"writing": {"hidden": True}, "critique": {"hidden": False, "instructions": "Quote it."}})
+        self.assertEqual(out, {"writing": {"hidden": True}, "critique": {"instructions": "Quote it."}})
+        rules = {"routes": {**out, "pictures": {"name": "Pictures"}}}
+        self.assertEqual(RS.names(rules), ["everyday", "larger", "critique", "pictures"])
+        self.assertFalse(RS.is_route(rules, "writing"))
+        for bad in ({"everyday": {"hidden": True}}, {"pictures": {"name": "P", "hidden": True}}, {"writing": {"hidden": "yes"}}):
+            with self.assertRaises(RS.RouteError):
+                RS.check(bad)

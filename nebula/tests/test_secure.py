@@ -168,6 +168,26 @@ class SignInTest(unittest.TestCase):
         kinds = [e["kind"] for e in req(b, "/api/security", headers=sess)[1]["events"]]
         self.assertIn("signin.ok", kinds); self.assertIn("signin.changed", kinds)
 
+    def test_no_pin_on_this_computer(self):
+        b = self.rig.base
+        st, out, cookie = req(b, "/api/signin/pin/set", {"pin": "4826"})
+        sess = {"Cookie": cookie.split(";")[0]}
+        self.assertEqual(req(b, "/api/stars")[0], 401)
+        self.assertEqual(req(b, "/api/signin/open", {"on": True})[0], 401)                  # signed in only
+        self.assertEqual(req(b, "/api/signin/open", {"on": True}, sess)[1], {"open_here": True})
+        self.assertEqual(req(b, "/api/stars")[0], 200)                                     # this computer: no PIN
+        v = req(b, "/api/signin")[1]
+        self.assertTrue(v["signed_in"] and v["open_here"] and v["here"])
+        self.assertEqual(req(b, "/api/stars", headers={"X-Nebula-From": "a-peer"})[0], 401)   # forwarded for a peer: no
+        self.assertEqual(req(b, "/api/stars", headers={"Authorization": "Bearer x"})[0], 401)  # a token of its own: no
+        si = self.rig.srv.signin
+        self.assertFalse(si.open_here("192.0.2.7"))                                       # another device: signs in
+        self.assertTrue(si.open_here("127.0.0.1"))
+        self.assertEqual(req(b, "/api/signin/open", {"on": False})[1], {"open_here": False})
+        self.assertEqual(req(b, "/api/stars")[0], 401)
+        kinds = [e["what"] for e in req(b, "/api/security", headers=sess)[1]["events"] if e["kind"] == "signin.changed"]
+        self.assertTrue(any("no PIN" in k for k in kinds), kinds)
+
     def test_wrong_pins_are_throttled(self):
         b = self.rig.base
         req(b, "/api/signin/pin/set", {"pin": "4826"})
@@ -247,6 +267,13 @@ class SandboxDefaultTest(unittest.TestCase):
             unsandboxed = {"e": "OpenShell is not installed on this machine"}
         self.assertIn("without a sandbox", gravity.needs_care(T(), E()))
         self.assertIsNone(gravity.needs_care(T(), type("E2", (), {"unsandboxed": {}})()))
+        from nebula.config import Tier
+        deployed = Tier(name="big", engine="http://127.0.0.1:8080", mesh="network", managed="big")
+        self.assertIsNone(gravity.needs_care(deployed))                       # a Nebula install on a household server
+        router = Tier(name="net-x", engine="http://127.0.0.1:8080", mesh="network")
+        self.assertIn("router of other machines", gravity.needs_care(router))  # the household's router: still care
+        deployed.risky = True
+        self.assertEqual(gravity.needs_care(deployed), "you marked it as needing care")
 
 
 class LocalNamesTest(unittest.TestCase):

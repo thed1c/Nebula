@@ -136,6 +136,18 @@ async function main() {
     webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
   win.once("ready-to-show", () => win.show());
+  // spelling: a mistyped word is underlined where you type; right-click offers the corrections (and cut, copy, paste)
+  try { if (process.platform !== "darwin") win.webContents.session.setSpellCheckerLanguages(["en-US"]); } catch (e) { /* no dictionary: no underline */ }
+  win.webContents.on("context-menu", (e, p) => {
+    const items = (p.dictionarySuggestions || []).slice(0, 6).map((w) => ({ label: w, click: () => win.webContents.replaceMisspelling(w) }));
+    if (p.misspelledWord) {
+      if (!items.length) items.push({ label: "No suggestions", enabled: false });
+      items.push({ label: "Add to dictionary", click: () => win.webContents.session.addWordToSpellCheckerDictionary(p.misspelledWord) }, { type: "separator" });
+    }
+    if (p.isEditable) items.push({ role: "cut" }, { role: "copy" }, { role: "paste" }, { type: "separator" }, { role: "selectAll" });
+    else if (p.selectionText) items.push({ role: "copy" });
+    if (items.length) Menu.buildFromTemplate(items).popup({ window: win });
+  });
   win.on("page-title-updated", (e) => e.preventDefault());       // the window keeps the config's title
   app.on("second-instance", () => { if (win.isMinimized()) win.restore(); win.focus(); });
 

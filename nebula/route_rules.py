@@ -150,9 +150,10 @@ def apply(turn, est_tokens: int, state, named: str | None) -> dict | None:
     if "refuse" in then or turn.pinned or not turn.ladder:
         return out
     target = then.get("to") or then.get("only")
-    if target in ("larger", "everyday", "writing", "critique") and turn.policy is not None:
+    from nebula import route_settings
+    if route_settings.is_route(turn.rules, target) and turn.policy is not None:
         want = target
-        first = [t for t in turn.ladder if turn.policy.stage(t.name) == want]
+        first = turn.policy.order([t for t in turn.ladder if turn.policy.stage(t.name) == want])   # the route's own order
         if first:
             turn.ladder = first + [t for t in turn.ladder if t not in first]
             out["moved"] = True

@@ -49,7 +49,7 @@ def verify_session(db, session_id: str) -> tuple[list[str], list[str]]:
                 elif att["reply_sha256"] != e["content_sha256"]:
                     bad.append(f"seq {e['seq']}: the attempt's reply_sha256 differs from the reply event")
             conv.append(canon)
-        elif kind in ("briefing", "handoff", "lifecycle", "tool_round"):
+        elif kind in ("briefing", "handoff", "lifecycle", "tool_round", "team_action", "team_note", "box_action", "skill"):
             if kind == "handoff" and e["attempt_id"] not in attempts:
                 bad.append(f"seq {e['seq']}: handoff from unknown attempt {e['attempt_id']}")
         elif kind == "request":

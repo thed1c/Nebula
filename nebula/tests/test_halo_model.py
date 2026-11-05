@@ -24,13 +24,14 @@ class FakePulls:
 
 class HaloModelTest(unittest.TestCase):
     def test_manifest_and_assets(self):
-        for m in HM.models():                                           # Halo v3.1 (LFM3) and Halo v2 (LFM2.5)
-            self.assertEqual(HM.verify_assets(m), [], m["id"])          # the shipped adapters are the ones described
+        for m in HM.models():                                           # Halo v3.1 (LFM3), Halo v2 (LFM2.5), Halo Omni
+            if not m.get("piece"):                                      # Omni's adapters are a download of their own
+                self.assertEqual(HM.verify_assets(m), [], m["id"])      # the shipped adapters are the ones described
             b = m["base"]
             self.assertEqual(len(b["revision"]), 40)                    # a pinned commit, never "main"
             self.assertEqual(len(b["sha256"]), 64)
         self.assertTrue((HM.ASSETS / "LICENSE-LFM-1.0").is_file())
-        self.assertEqual([m["id"] for m in HM.models()], ["halo-lfm3-1.7b", "halo-lfm25-1.2b"])
+        self.assertEqual([m["id"] for m in HM.models()], ["halo-lfm3-1.7b", "halo-lfm25-1.2b", "halo-omni-2b"])
         self.assertEqual(HM.manifest()["id"], "halo-lfm3-1.7b")         # the default
 
     def test_the_runtime_picks_the_model(self):

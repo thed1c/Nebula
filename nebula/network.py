@@ -36,6 +36,7 @@ class Network:
         self.broker: pairnet.Broker | None = None
         self.face = None
         self.why: str | None = None
+        self._me: dict | None = None          # this machine on the network (cluster:get-node-id), asked once
 
     def section(self) -> dict:
         n = self.cfg.raw.setdefault("network", {})
@@ -135,12 +136,17 @@ class Network:
         return self.broker.call("cluster:invite-status", {"inviteId": invite_id})
 
     def members(self) -> list[dict]:
+        """The network's machines; this one carries self: True (the page shows it as "This computer", not twice)."""
         if self.broker is None:
             return []
         try:
-            return self.broker.call("nodes:get-initial").get("nodes") or []
+            nodes = self.broker.call("nodes:get-initial").get("nodes") or []
+            if self._me is None:
+                self._me = self.broker.call("cluster:get-node-id") or {}
         except pairnet.PairError:
             return []
+        mine = {v for v in (self._me.get("nodeId"), self._me.get("nodeUuid")) if v}
+        return [{**m, "self": True} if mine & {m.get("id"), m.get("nodeUuid")} else m for m in nodes]
 
     def offered(self) -> list[str]:
         """The models the household's servers offer, as this machine's router sees them (its llama.cpp facade)."""

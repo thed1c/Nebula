@@ -208,7 +208,7 @@ cd nebula/desktop && npm ci
 ./node_modules/.bin/electron . --config ~/.config/nebula/nebula.json
 ```
 
-The System tab's error log keeps the cockpit's warnings and errors and the engine's own (`nebula/enginelog.py`). For
+The error log (on Captain's Log) keeps the cockpit's warnings and errors and the engine's own (`nebula/enginelog.py`). For
 an engine the cockpit did not start, name where its log is:
 
 ```json
@@ -258,7 +258,9 @@ Everything builds locally with Docker; nothing here uses GitHub's minutes.
    **Impulse (L)** (older NVIDIA cards, Maxwell to Volta: GTX 900, GTX 10, P100, V100; CUDA 13 dropped them; not in
    the installers, a release file of its own): CUDA 12.9 (`cuda_redist.py --version 12.9.1 --out <cuda12>`), then in
    the same Ubuntu 22.04 container build `impulse/` with `-DIMPULSE_PORTABLE=ON
-   -DCMAKE_CUDA_ARCHITECTURES="50-real;52-real;60-real;61-real;70-real"` and that CUDA (no `IMPULSE_FLASHNEXT`), then
+   -DCMAKE_CUDA_ARCHITECTURES="50-real;52-real;60-real;61-real;70-real;75-real;80-real;86-real;89-real;90-real;100-real;120a-real"`
+   (the older cards and every newer one, so a PC with both kinds runs one engine on both) and that CUDA (no
+   `IMPULSE_FLASHNEXT`), then
    `python3 greenfield/impulse_dist.py --platform linux --build <build> --cuda <cuda12> --legacy`; `package.py
    --impulse-legacy impulse-legacy` writes it as the piece `impulse-legacy-<version>-linux-x86_64.tar.xz` (xz -9e:
    about 470 MB, against 617 MB as tar.gz); attach it and put its sha256 and size in `pieces.json`. Its folder carries

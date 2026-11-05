@@ -295,11 +295,13 @@ def args(package: str, options: dict, model: str, binary=None) -> list[str]:
 
 
 def version(binary) -> str | None:
-    """The package's own --version line, or None when it cannot be run."""
+    """The package's own --version line, or None when it cannot be run. No card is visible to it (a llama.cpp build
+    opens every GPU's context on start otherwise, even for --version)."""
     import subprocess
     argv = (list(binary) if isinstance(binary, list) else [str(binary)]) + ["--version"]
+    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "HIP_VISIBLE_DEVICES": "", "ROCR_VISIBLE_DEVICES": "", "GGML_VK_VISIBLE_DEVICES": ""}
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=10, env=env, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         return None
     text = (p.stdout + "\n" + p.stderr).strip().splitlines()

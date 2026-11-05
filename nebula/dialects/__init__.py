@@ -33,6 +33,8 @@ class Context:
     guard: Any = None                            # nebula.guard.Guard: Halo's holds on guests (paused, limited, a model held back)
     otel: Any = None                             # nebula.otel.Exporter: a span per turn (metadata only), when turned on
     reply_headers: Any = field(default_factory=dict)   # what the turn tells the caller beside the answer (X-Nebula-Budget, …)
+    team: Any = None                             # a Starweave work item's turn: {"task_id", "session_id", "item_id", "depth", "chain", ...}
+    library: Any = None                          # Lookup's local embedder for matching skill descriptions
 
 
 @dataclass

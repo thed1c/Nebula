@@ -107,10 +107,10 @@ def layout(m: dict, have: list[dict] | None = None, legacy: bool = False) -> dic
     """A model's first multi-card layout this machine can take ({"id", "card", "options", "about"}), or None: one card.
     A layout names how many cards it wants and their free memory together (`cards`, `min_total_mb`); the cards with the
     most free memory among the ones Impulse runs on are taken, split in proportion to it (tensor_split). `legacy`: on
-    Impulse (L), its older cards only (one engine's cards are of one kind)."""
+    Impulse (L), every card it carries kernels for (an older card and a newer one together)."""
     from nebula import engines as E
     have = E.cards() if have is None else have
-    ok = ([c for c in have if E.is_legacy_card(c)] if legacy else
+    ok = ([c for c in have if E.legacy_runs(c)] if legacy else
           [c for c in have if not c.get("compute_cap") or c["compute_cap"] in IMPULSE_CAPS])
     ok.sort(key=lambda c: (c.get("memory_mb") or 0) - (c.get("used_mb") or 0), reverse=True)
     for lay in m.get("layouts") or []:

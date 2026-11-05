@@ -8,8 +8,10 @@ on a write instead of polling the database.
 Nothing here is kept: the token counts are of the attempts still running and are dropped when the ledger closes the
 attempt (its costs row has the real counts then); the working set is what runs at this moment.
 
-    Watch(ledger).tick()   one page's view since its last look: running, started, landed, handoffs, briefings, and
-                           escalations (decisions that moved a turn up the ladder from its floor, for the page's notices)
+    Watch(ledger).tick()   one page's view since its last look: running, started, landed, handoffs, briefings,
+                           escalations (decisions that moved a turn up the ladder from its floor, for the page's notices),
+                           and team: Starweave's work items in flight per task and the beams (an item given from one
+                           model to another: "started", its result back: "landed") since the last look
 """
 from __future__ import annotations
 
@@ -94,6 +96,7 @@ class Watch:
         self.d_cursor = db.execute("SELECT coalesce(max(rowid), 0) FROM decisions").fetchone()[0]
         self.running: set[str] = set()
         self.first = True
+        self.w_seen: dict[str, str] = {}         # Starweave work item -> the state the last tick saw
 
     def _titles(self, session_ids) -> dict:
         from nebula.ledger import text_of       # here: the ledger imports this module
@@ -117,8 +120,9 @@ class Watch:
                 if r["attempt_id"] in out:
                     continue
                 try:
-                    c = json.loads(r["inputs"]).get("caller")
-                except (ValueError, AttributeError):
+                    i = json.loads(r["inputs"])
+                    c = i.get("caller") or (f"gravity:{i['peer']}" if i.get("peer") else None)
+                except (ValueError, AttributeError, TypeError):
                     c = None
                 if c:
                     out[r["attempt_id"]] = c
@@ -199,6 +203,7 @@ class Watch:
             self.h_cursor = handoffs[-1]["rid"]
         self.e_cursor = e_max
         self.running = now_ids
+        team = self._team(db)                    # before `first` turns: the first look reports no beams
         self.first = False
         for h in handoffs:
             h.pop("rid", None)
@@ -216,4 +221,28 @@ class Watch:
         return {"version": activity.version if activity is not None else 0, "running": running, "started": started,
                 "landed": landed, "handoffs": handoffs, "briefings": briefings, "escalations": escalations,
                 "tool_rounds": [] if self.first else tool_rounds,
-                "working": working}
+                "working": working, "team": team}
+
+    def _team(self, db) -> dict:
+        """Starweave's items in flight (by task) and the beams since the last look."""
+        try:
+            rows = [dict(r) for r in db.execute(
+                "SELECT item_id, task_id, session_id, child_session_id, label, from_model, model, mode, state, updated_at FROM work_items "
+                "WHERE state NOT IN ('done', 'failed', 'cancelled') OR item_id IN (SELECT item_id FROM work_items "
+                "ORDER BY updated_at DESC LIMIT 200)")]
+        except Exception:  # noqa: BLE001 - a ledger without the table (an older file, before its upgrade)
+            return {"items": [], "beams": []}
+        final = ("done", "failed", "cancelled")
+        items, beams = [], []
+        for r in rows:
+            before = self.w_seen.get(r["item_id"])
+            if r["state"] not in final:
+                items.append(r)
+            if before == r["state"] or self.first:
+                continue
+            if before is None:                   # given since the last look (and perhaps back already)
+                beams.append({**r, "beam": "started"})
+            if r["state"] in final:
+                beams.append({**r, "beam": "landed"})
+        self.w_seen = {r["item_id"]: r["state"] for r in rows}
+        return {"items": items, "beams": beams}

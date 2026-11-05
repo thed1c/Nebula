@@ -113,4 +113,6 @@ def local_servers(server) -> dict:
     if getattr(server, "halo", None) is not None:          # Halo's own tools: only its turn runs them (nebula/halo.py)
         from nebula.halo import HaloTools
         out["halo"] = HaloTools(server)
+    from nebula.teamtasks import StarweaveTools             # the owner's chat gives work to a team (nebula/teamtasks.py)
+    out["starweave"] = StarweaveTools(server)
     return out

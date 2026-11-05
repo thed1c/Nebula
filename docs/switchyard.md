@@ -90,7 +90,7 @@ policy (read only: policies are never written from Nebula).
   nothing out, and its port exposed through the gateway, which is where Nebula routes it. Its model must be in the
   models folder. Stop deletes the sandbox. Impulse takes no key, so on this machine its gateway address is as open
   as a local engine's port.
-- **This Nebula as a sandbox's model provider:** "Use this Nebula from a sandbox" gives a provider profile that
+- **This Nebula as a sandbox's model provider:** `GET /api/yard/openshell/profile` gives a provider profile that
   reaches only this Nebula (`host.openshell.internal:<port>`) with a caller's key as its credential, and the commands
   to import it and attach it. The sandbox's calls are then that caller's (its models, its own cache).
 

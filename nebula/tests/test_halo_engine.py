@@ -142,6 +142,14 @@ class HaloEngineTest(unittest.TestCase):
                  and "You are Halo, the router" in json.dumps((x.get("body") or {}).get("messages"))]
         self.assertEqual(len(asked), 1)                                                 # through the key check
 
+    def test_the_default_ticks_do_not_take_its_own_model_away(self):
+        """The owner ticked default models (Routes): every one of Halo's looks failed with "no model may be used now"
+        for a day, because its own model is never one of them."""
+        self.assertTrue(self.srv.halo_engine.ready(), self.srv.halo_engine.view())
+        self.srv.cfg.default_models = ["small"]
+        self.assertEqual(self.srv.halo._ask_model("anything new?"), "all calm, from Halo's own model")
+        self.assertEqual(len(self.engine.requests), 0)
+
     def test_an_owner_route_wins_over_its_own_model(self):
         self.srv.cfg.assistant = {**(self.srv.cfg.assistant or {}), "halo": {"route": {"tier": "small"}}}
         self.srv.halo._ask_model("anything new?")
@@ -616,7 +624,7 @@ class HaloModelChoiceTest(unittest.TestCase):
         eng = self.run_with([("Impulse", [sys.executable, self.fake])], lambda e: e.ready() and "could not" in ((e.view().get("upgrade") or {}).get("why") or ""))
         self.assertTrue(eng.ready(), eng.view())
         self.assertEqual(eng.view()["model"], "halo-lfm25-1.2b")
-        self.assertIn("Halo v2 runs", eng.view()["upgrade"]["why"])
+        self.assertIn("(LFM2.5 1.2B) runs", eng.view()["upgrade"]["why"])                # Halo v2, by its name
 
     def test_an_impulse_that_cannot_run_lfm3_leaves_v2(self):
         self.put("lfm3"); self.put("lfm25")

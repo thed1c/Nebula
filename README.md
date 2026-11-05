@@ -12,11 +12,13 @@ Everything runs on your machine, and nothing leaves it unless you say so.
 
 > **Nebula is in testing.** Things may be rough around the edges. If something goes wrong, tell us (see [Getting help](#getting-help)). That's the whole point of testing.
 
-**New in 0.1.7: older NVIDIA cards.** A GTX 900 or 10 series card, a Titan X / Xp / V or a Tesla M, P or V100 now runs
-models on **Impulse (L)**, an optional engine Nebula offers on such a computer (a download of its own, never in the
-installer). Since 0.1.6.3, Windows updates download only what
-changed, and Liquid AI's **LFM2.5 8B** is in the model list. Since 0.1.6.2 Setup closes a running Nebula before it installs. Each route (Everyday, Larger, Writing, Critique) can have its
-own instructions. Since 0.1.5, Halo runs Liquid AI's **LFM3-1.7B** with an NVIDIA card. The details are in the [changelog](CHANGELOG.md).
+**New in 0.2.0: your models as a team, skills and a toolbox.** With **Star Weaving** on, the model Halo picks for a
+task leads it: it can hand parts to the rest of your models, ask one of them, move the work up to a larger model, and
+send it for review before you get one answer back. **Skills** (folders with a SKILL.md, from a link or a skills
+repository) teach your models a job, and the **toolbox** lets a model work on files and run commands in one folder,
+inside a sandbox. The page is rearranged: the tabs are now **Navigation**, **Captain's Log**, **Engineering** and
+**Control** (see below). An older NVIDIA card can now work beside a newer one on **Impulse (L)**, and Halo can run
+Liquid AI's **LFM3-Omni** if you pick it. The details are in the [changelog](CHANGELOG.md).
 
 ---
 
@@ -149,36 +151,81 @@ Nebula draws your setup as a little space map. Everything on it is something you
 | **Lookup** (the **Dyson Sphere**, a swarm of silver satellites) | Lets Halo read your own documents and search the web. |
 | **API Server** (the **Quasars**) | Doors for other apps on your computer or home network to use your models. |
 | **Gravity** | The door to friends' Nebulas, over the internet. Off until you turn it on. |
-| **Anti-Gravity** (stars in iron chains) | Cloud models like the ones you pay a company for. Optional. They're chained because they can never be shared. |
+| **Anti-Gravity** (stars in chains) | Cloud models like the ones you pay a company for. Optional. They're chained because they can never be shared. |
 | **Friends' systems** | Each friend you've joined, with their models round them. Ones they share with you are free, with a route. Ones they don't are chained. |
 
 **Mouse basics:** drag to move things, scroll to zoom, right-click a star for its menu.
 
-Along the top are the tabs:
+Along the top are the tabs. **Event Horizon** is the map; the others open a row of pages:
 
-| Tab | What's in it |
-|---|---|
-| **Navigation** | Who's asking (your apps, your friends) and which models each one may use. |
-| **Engineering** | Your engines and models, plus **System** (errors, sandboxes, sign-in). |
-| **Captain's Log** | Every conversation and every choice Nebula made, to look back on. |
-| **Gravity** | Sharing with friends and your own other machines. |
-| **Widgets** | Show or hide the panels on the map. |
+| Tab | Page | What's in it |
+|---|---|---|
+| **Navigation** | **Star Calling** | Smart routing: which models answer which kind of request (your routes), and who's asking (your apps, your friends). |
+| | **Star Weaving** | Teamwork: your models as teams, Halo's questions, the missions under way. |
+| | **Gravity** | **Constellation** on top (the gateway: your own machines and how friends reach you), then **Gravity** (your friends, what each one may use, Block). |
+| **Captain's Log** | | Every conversation and every choice Nebula made, to look back on, plus the error log, OpenTelemetry and syslog. |
+| **Engineering** | **Engines** | Your machines and the engines that run the models. |
+| | **Models** | The model files (get, load, delete), cloud models, and each model's toolbox. |
+| | **Skills** | Find, add, turn on and update skills. |
+| **Control** | **Halo** | Halo's personality, instructions, version and Lookup. |
+| | **Appearance** | The look of the map: animations and effects. |
+| | **System** | Updates, apps and phones, sign-in and sandboxes. |
+
+Most panels on a page are widgets: drag the corner to resize one, fold it, move it, or put it back.
 
 ### Traffic control
 
 At the heart of Nebula is its traffic control, the event horizon every message passes through. When a message comes
 in, Nebula picks which model answers, keeps a queue when a model is busy, and writes every conversation and choice in
-the **Captain's Log**, so you can look back at what happened. You steer it from **Navigation** and tune your engines
-in **Engineering**.
+the **Captain's Log**, so you can look back at what happened. You steer it from **Navigation → Star Calling** and
+tune your engines in **Engineering**.
 
-**Smart routing** is one plain switch:
+**Smart routing** (Star Calling) is a switch and a choice of how it decides:
 
-- **Off**: you always get the model you picked.
-- **Practice**: Nebula shows what it *would* have picked, but doesn't change anything. Good for getting a feel.
-- **On**: **Halo** reads each message and sends it down a route: **everyday** (quick questions and chat), **larger**
-  (code, analysis, step-by-step work), **writing** (stories, scenes, poems) or **critique** (feedback on your
-  writing). Every reply says which model answered and why. You choose which models are on each route, and in what
-  order. Cloud models are only used when you ask for one by name.
+- **Off**: every request goes down **Any task**, the first route, its models in your order.
+- **Just watch**: Halo picks each request's route but only writes its pick down (on each reply's "why?"), so you see
+  what it would do first.
+- **Halo picks**: **Halo** reads each message and sends it down a route: **everyday** (quick questions and chat),
+  **larger** (code, analysis, step-by-step work), **writing** (stories, scenes, poems) or **critique** (feedback on
+  your writing). Every reply says which model answered and why.
+- **Save power**, **Balanced** or **Best answers**: no Halo call; Nebula scores each request (a long prompt, pictures,
+  code, tool errors, asked again) and sends the hard ones to a larger model. **Custom** sets the numbers yourself.
+
+You choose which models are on each route, and in what order, and you can add routes of your own (**+ Add a new
+route**). Cloud models are only used when you ask for one by name.
+
+### Star Weaving: your models as a team
+
+With **Teamwork** on, the model Halo picks for a task leads it. It may hand parts of the work to its team, ask a
+teammate a question, hand the work up to a larger model, and send the result for review; you get one answer back,
+with a line saying who did what. Halo referees: it refuses a hand-off to a model that is down, too small for the
+work, or past the task's limits, and it asks you when a team has a question only you can answer.
+
+- **Off by default.** Off, Halo gives every task to one model, the way Star Calling says.
+- **Teams and contracts.** Halo suggests teams from your models (accept or decline them); each team has a contract:
+  who leads, who helps, who reviews, what "done" means and the limits it works to.
+- **Limits** for every task: how many teammates at once, how deep the work may be handed down, tokens, time (20
+  minutes while you wait in a chat, 2 hours in the background), rework rounds, and the most it may spend on cloud
+  models (US $1 to start). A task stops at its limit and tells you.
+- **Only yours.** Teamwork, skills and the toolbox are never offered to a friend, a guest or another Nebula using your
+  models.
+- Ask Halo in the chat ("Halo, I want to do this task") and it starts a team task; **Star Weaving** shows the missions
+  under way and the ones done.
+
+### Skills
+
+A skill is a folder with a SKILL.md: instructions (and sometimes scripts) that teach a model a job. **Engineering →
+Skills** adds one from a link (a GitHub folder or any SKILL.md) or finds one in a skills repository, checks it first
+and says what it asks to run, and keeps it up to date. A skill is used only once you turn it on, and Nebula loads it
+only for a task it fits. Its scripts run in a sandbox, never on your computer directly. A skill the check warns about
+comes in switched off.
+
+### The toolbox
+
+A model with the toolbox works in **one folder** you pick (**Engineering → Models**, per model): it lists, searches,
+reads, writes and patches files there, and runs commands (your tests, say) inside an OpenShell sandbox with no
+network. Nothing outside the folder is reachable, and without OpenShell it can't run commands at all. Every file it
+touches and every command it runs is in the Captain's Log.
 
 ### Halo
 
@@ -196,7 +243,9 @@ your own use.
 Halo thinks with a small model of its own, on your graphics card (or the CPU): Liquid AI's **LFM3-1.7B** with an
 NVIDIA card, **LFM2.5-1.2B** without one, each with Nebula's adapters for its jobs (the guard, the router, and the
 briefing a model gets when a conversation moves to another one). It is downloaded once, the one your computer runs,
-and its licence (LFM Open License v1.0) comes with Nebula. You can also let Halo think with the Assistant's model.
+and its licence (LFM Open License v1.0) comes with Nebula. You can also let Halo think with the Assistant's model,
+or, with an NVIDIA card, pick **Omni** (Liquid AI's LFM3-Omni-2B, in **Control → Halo → Version**): the model (about
+1 GB, from Liquid AI) and Nebula's adapters for it (about 30 MB) download the first time you pick it.
 
 ### Lookup
 
@@ -221,7 +270,7 @@ This is the "join us" part.
 
 When you're ready:
 
-1. Open **Gravity** and choose **Share with a friend**.
+1. Open **Navigation → Gravity** and choose **Share with a friend**.
 2. Tick the models your friend may use.
 3. Send them the one-time invite. It works once, then expires.
 
@@ -289,7 +338,7 @@ Where it's less locked down, Nebula tells you, and here it is in one place:
 
 - **No sandbox on Linux without Docker or Podman, or on Windows if you said No** (or a setup step failed). The model
   still runs, as a normal program on your computer, with a warning in Nebula (and on your friend's side if you share
-  it). **Engineering → System** says why.
+  it). **Control → System** says why.
 - **Models on an AMD Radeon or another non-NVIDIA card run without a sandbox**, directly on your computer, because a
   sandbox can't reach that graphics card. Run a model's preview says so before you start.
 - **On Windows, the container is the whole sandbox.** Models are read-only to it and its port is reachable from this
@@ -302,7 +351,7 @@ Where it's less locked down, Nebula tells you, and here it is in one place:
 
 ## Updates
 
-Nebula never updates itself behind your back. In **Engineering → System → Updates** you pick one of three:
+Nebula never updates itself behind your back. In **Control → System → Updates** you pick one of three:
 
 - **Only when I ask** (the default): Nebula never looks until you press **Look now**.
 - **Check when Nebula opens**: one look, a minute after it starts, and none after that.
@@ -372,17 +421,22 @@ are for people with a lot of memory and more than one graphics card. They are no
 
 We'd rather you hear it from us:
 
-- **NVIDIA cards get the most testing.** AMD Radeon and other cards are new in this release: they're slower, run
+- **NVIDIA cards get the most testing.** AMD Radeon and other cards run through Vulkan: they're slower, run
   without a sandbox, and we've tested only one Radeon so far. Qwen3.8 Flash-Next needs NVIDIA. Mac isn't supported.
 - **In the code, but switched off and never tried between two real computers:** sending expert work to another
   computer over the network, splitting one model's layers across two computers, and the fast RDMA network link.
   They're there for the future; Nebula doesn't use them.
+- **Teamwork, skills and the toolbox are new.** Teams use the models on this computer and your own machines, not a
+  friend's (that may come later). The toolbox runs commands only where OpenShell is set up. A skill's check warns; it
+  doesn't prove a skill safe, so add skills from people you trust.
+- **Impulse (L) hasn't run on a real older card yet.** It is built and checked for every card from Maxwell to
+  Blackwell; tell us how it goes on yours.
 - **Tested models only, out of the box.** The short list is what we've checked. You can add other GGUF models
   yourself, but we haven't tried them.
 
 ## Getting help
 
-- Something broke? Open **Engineering → System**. It has an error log you can copy.
+- Something broke? Open **Captain's Log**. Its error log can be copied.
 - Tell us in an [issue](../../issues), with what you did and what you saw. A screenshot helps.
 
 ## For developers

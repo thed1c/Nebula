@@ -1,6 +1,6 @@
 # OpenTelemetry
 
-Optional, and off by default. When you turn it on (System tab, or `"otel": {"enabled": true, "endpoint": ...}`), Nebula
+Optional, and off by default. When you turn it on (Captain's Log, or `"otel": {"enabled": true, "endpoint": ...}`), Nebula
 sends one span per turn to your collector over OTLP/HTTP (JSON). Grafana, Jaeger, Honeycomb and the like read them.
 
 ## What a span holds: metadata only
@@ -22,5 +22,5 @@ status). The tests send a prompt holding a password and check that neither it no
 
 The collector's address must be `https://`, or `http://` on this machine (a collector running beside Nebula), so
 metadata never crosses the network in the clear. `"headers"` carries a collector's API key when it needs one. Spans
-are batched and sent from one background thread. A collector that is down loses spans, never a turn; the System tab
+are batched and sent from one background thread. A collector that is down loses spans, never a turn; Captain's Log
 shows what was sent and what failed. Turning it on or off, or changing the address, is written to the security log.

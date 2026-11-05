@@ -16,8 +16,10 @@
 #   -DIMPULSE_PORTABLE=ON        a binary for other PCs: ggml-cpu at an AVX2 baseline instead of this CPU's features
 #   -DCMAKE_CUDA_ARCHITECTURES=...   default 75-real;80-real;86-real;89-real;90-real;100-real;120a-real (RTX 20 through
 #                                    RTX 50, A100, H100, B200; CUDA 13; the V100 (70) needs a CUDA 12 build of its own)
-#                                Impulse (L), for Maxwell to Volta (GTX 900, GTX 10, P100, V100), which CUDA 13 dropped:
-#                                CUDA 12.x and "50-real;52-real;60-real;61-real;70-real" (greenfield/impulse_dist.py --legacy)
+#                                Impulse (L), for Maxwell to Volta (GTX 900, GTX 10, P100, V100), which CUDA 13 dropped,
+#                                and every newer card too (a PC with an older and a newer card runs one engine on both):
+#                                CUDA 12.x and "50-real;52-real;60-real;61-real;70-real;75-real;80-real;86-real;89-real;
+#                                90-real;100-real;120a-real" (greenfield/impulse_dist.py --legacy)
 #   -DIMPULSE_TOOLS=ON           also the test drivers (impulse-gemma4, impulse-qwen35, logit-cmp) and route-oracle
 #   -DIMPULSE_FLASHNEXT=ON       also Strata's engine from flashnext/ (One Engine P1): libimpulse_fx (the engine as one
 #                                shared library impulse-server loads for a Flash-Next pack) and the standalone `strata`,

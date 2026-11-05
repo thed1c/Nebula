@@ -149,6 +149,44 @@ class HaloTest(Rig):
         from nebula import callers
         self.assertEqual(callers.by_key(self.srv.cfg, self.key)["id"], "friend-app")   # the key works again
 
+    def test_a_calm_look_stays_out_of_the_chats_and_an_alert_opens_one(self):
+        self.big.script = lambda body: "Nothing unusual: no step needed."
+        self.srv.seclog.add("signin.ok", "10.0.0.20", "pin")
+        self.assertFalse(self.srv.halo.check()["acted"])
+        rows = self.srv.ledger.db.execute("SELECT session_key, key_source FROM sessions").fetchall()
+        self.assertEqual([r["key_source"] for r in rows], ["halo"])             # it looked, in a chat of its own
+        self.assertTrue(rows[0]["session_key"].startswith("halo:"))
+        self.assertEqual(self.srv.ledger.summaries(), [])                         # not in your chats
+        self.big.script = self.script                                             # now it takes a step: abnormal
+        for _ in range(3):
+            self.guest("big")
+        self.assertTrue(self.wait(lambda: call(self.base, "/api/halo")[1]["actions"]))
+        shown = [s for s in self.srv.ledger.summaries() if s["key_source"] == "halo-alert"]
+        self.assertEqual(len(shown), 1)                                           # that look's chat is yours to read
+        self.assertFalse([s for s in self.srv.ledger.summaries() if s["key_source"] == "halo"])
+
+    def test_its_looks_are_not_among_the_calls(self):
+        """Every five minutes a look landed in the Mission Log's Calls (and failed ones stayed there, red)."""
+        from pathlib import Path
+        page = (Path(H.__file__).parent / "ui" / "index.html").read_text()
+        self.assertIn('if (a.dialect === "halo") continue;', page)
+        self.assertIn('[...live.running.values()].filter(a => a.dialect !== "halo")', page)
+
+    def test_a_sign_in_from_this_machine_is_routine(self):
+        self.assertTrue(H.routine({"kind": "signin.ok", "who": "127.0.0.1"}))
+        self.assertTrue(H.routine({"kind": "signin.ok", "who": "::1"}))
+        self.assertFalse(H.routine({"kind": "signin.ok", "who": "10.0.0.20"}))     # another device: Halo looks
+        self.assertFalse(H.routine({"kind": "signin.refused", "who": "127.0.0.1"}))   # a refusal: Halo looks
+        self.assertTrue(H.routine({"kind": "auth.signin", "who": "127.0.0.1"}))       # the page before it signed in
+        self.assertFalse(H.routine({"kind": "auth.signin", "who": "10.0.0.20"}))   # from another device: Halo looks
+        self.srv.seclog.add("signin.ok", "127.0.0.1", "pin")
+        self.assertEqual(self.srv.halo.pending(), [])
+        self.assertEqual(self.srv.halo.check(), {"looked": 0})
+        self.assertEqual(self.big.requests, [])                                  # no model call, no chat
+        self.assertIn("signin.ok", [e["kind"] for e in self.srv.seclog.read()])   # still in the security log
+        self.srv.seclog.add("signin.ok", "10.0.0.20", "pin")
+        self.assertEqual([r["who"] for r in self.srv.halo.pending()], ["10.0.0.20"])
+
     def test_nothing_new_stays_calm(self):
         self.assertEqual(self.srv.halo.check(), {"looked": 0})
         self.assertEqual(call(self.base, "/api/halo")[1]["state"], "glow")

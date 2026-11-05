@@ -81,18 +81,23 @@ def prompt_from_messages(messages: list[dict]) -> tuple[str | None, str]:
 
 # ------------------------------------------------------------------------------------------------ the forms
 def build_command(cli: str | None, command, model: str | None, system: str | None, prompt_file: str,
-                  output_file: str) -> tuple[list[str], bool, str]:
+                  output_file: str, writes: bool = False) -> tuple[list[str], bool, str]:
     """(argv, prompt on stdin?, how the answer is read: "stdout" | "json" | "file"). `{prompt_file}`, `{output_file}`
-    and `{model}` in an owner's command are filled in; without any, its prompt comes on stdin."""
+    and `{model}` in an owner's command are filled in; without any, its prompt comes on stdin. `writes`: the CLI may
+    change files in its working directory (Codex's workspace-write sandbox, Claude Code's acceptEdits); read only
+    otherwise."""
     if cli == "claude":
         argv = ["claude", "-p", "--output-format", "json", "--no-session-persistence"]
+        if writes:
+            argv += ["--permission-mode", "acceptEdits"]
         if model:
             argv += ["--model", model]
         if system:
             argv += ["--system-prompt", system]
         return argv, True, "json"
     if cli == "codex":
-        argv = ["codex", "exec", "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--color", "never", "-o", output_file]
+        argv = ["codex", "exec", "--ephemeral", "--skip-git-repo-check", "-s", "workspace-write" if writes else "read-only",
+                "--color", "never", "-o", output_file]
         if model:
             argv += ["-m", model]
         return argv + ["-"], True, "file"             # the system text is in the prompt: codex has no flag for it
@@ -153,6 +158,7 @@ class CommandEngine:
         self.timeout_s = timeout_s
         self.slots = int(tier.slots or DEFAULT_SLOTS)
         self.cwd = tier.cwd or names.local_path(base_dir, "nebula-work", "cockpit-work")
+        self.writes = bool(getattr(tier, "writes", False) and tier.cwd)   # only in a folder the owner named for it
         self.sandbox = Sandbox(tier.name, dict(tier.sandbox, cli=tier.cli), base_dir, timeout_s) if tier.sandbox else None
         self.base = tier.address or f"cli:{self.binary}"
         self.api_key = None
@@ -242,7 +248,7 @@ class CommandEngine:
                 prompt = f"System instructions:\n{system}\n\n{prompt}"
             with open(prompt_file, "w", encoding="utf-8") as f:
                 f.write(prompt)
-            argv, on_stdin, how = build_command(self.cli, self.command, self.model, system, prompt_file, output_file)
+            argv, on_stdin, how = build_command(self.cli, self.command, self.model, system, prompt_file, output_file, self.writes)
             if argv and not os.path.isabs(argv[0]):
                 argv[0] = self.installed() or argv[0]
             env = dict(os.environ, NO_COLOR="1", TERM="dumb")
@@ -288,7 +294,7 @@ class CommandEngine:
         prompt_file, output_file = work + "/prompt.txt", work + "/answer.txt"
         if self.cli == "codex" and system:
             prompt = f"System instructions:\n{system}\n\n{prompt}"
-        argv, on_stdin, how = build_command(self.cli, self.command, self.model, system, prompt_file, output_file)
+        argv, on_stdin, how = build_command(self.cli, self.command, self.model, system, prompt_file, output_file, self.writes)
         started = time.monotonic()
         with self.lock:
             self.running += 1

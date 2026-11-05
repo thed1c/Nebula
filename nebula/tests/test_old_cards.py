@@ -1,7 +1,9 @@
 """Cards older than Impulse's build (CUDA 13 builds for compute capability 7.5 and newer): a GTX 1080 Ti (6.1) failed an
 engine with a generic error (a user, 2026-11-01). Such a card is said as such; Maxwell, Pascal and Volta (5.0 to 7.0) run
 on Impulse (L), the CUDA 12 build Nebula downloads when the owner asks (never in the installer); older ones (Kepler)
-stay on the CPU. One engine's cards are of one kind, and Impulse (L) needs a driver new enough for CUDA 12.9."""
+stay on the CPU. Impulse (L) carries the newer cards' kernels too, so on a PC with both kinds (a GTX 1080 Ti beside an
+RTX 3070) an engine with an older card runs Impulse (L) on all its cards; Nebula's pick there is the newer card on the
+main build, and the owner can choose the older one or both. Impulse (L) needs a driver new enough for CUDA 12.9."""
 import json
 import os
 import tempfile
@@ -82,16 +84,17 @@ class CardTooOldTest(Env):
                               "needs 7.5 or newer)", why)
                 self.assertIn("Impulse (L), Nebula's engine for older NVIDIA cards, is not published for this computer yet: "
                               "it runs on the CPU", why)
-        with mock.patch("nebula.pieces.platform_key", return_value="linux-x86_64"):   # the real catalog: 0.1.7's pieces
-            self.assertIn("Run a model offers it (a download of 470 MB, not in the installer)", E.card_too_old(PASCAL, self.base))
+        with mock.patch("nebula.pieces.platform_key", return_value="linux-x86_64"):   # the real catalog: 0.2.0's pieces
+            self.assertIn("Run a model and the Engines page offer it (a download of", E.card_too_old(PASCAL, self.base))
         with mock.patch("nebula.pieces.platform_key", return_value="windows-x86_64"):
-            self.assertIn("(a download of 586 MB, not in the installer)", E.card_too_old(PASCAL, self.base))
+            self.assertIn(" MB, not in the installer)", E.card_too_old(PASCAL, self.base))
         with mock.patch("nebula.pieces.pin", side_effect=published):
             why = E.card_too_old(PASCAL, self.base)
             self.assertEqual(why, "NVIDIA GeForce GTX 1080 Ti is older than Impulse's main build supports (compute 6.1; it "
                                   "needs 7.5 or newer): Impulse (L), Nebula's engine for older NVIDIA cards, runs it: Run a "
-                                  "model offers it (a download of 494 MB, not in the installer)")
-            self.assertEqual(E.card_too_old_short(PASCAL, self.base), "older card: needs Impulse (L) (Run a model offers it)")
+                                  "model and the Engines page offer it (a download of 494 MB, not in the installer)")
+            self.assertEqual(E.card_too_old_short(PASCAL, self.base),
+                             "older card: needs Impulse (L) (a download, offered here and in Run a model)")
 
     def test_with_the_piece_older_cards_are_usable(self):
         piece_here(self.base)
@@ -126,12 +129,26 @@ class CardTooOldTest(Env):
 
 
 class ImpulseBuildTest(Env):
-    def test_one_engine_runs_on_cards_of_one_kind(self):
-        piece_here(self.base)
-        prog, why = E.impulse_build([PASCAL, AMPERE], None, self.base)
+    def test_an_older_and_a_newer_card_run_one_engine_on_impulse_l(self):
+        prog, why = E.impulse_build([PASCAL, AMPERE], None, self.base)          # not here yet: the offer
         self.assertIsNone(prog)
-        self.assertEqual(why, "NVIDIA GeForce GTX 1080 Ti is an older card (Impulse (L)) and NVIDIA GeForce RTX 3060 a newer "
-                              "one (Impulse): one engine runs one Impulse build, so pick cards of one kind")
+        self.assertIn("GTX 1080 Ti is older than Impulse's main build supports", why)
+        leg = piece_here(self.base)
+        self.assertEqual(E.impulse_build([PASCAL, AMPERE], None, self.base), (leg, None))
+        self.assertEqual(E.impulse_build([AMPERE, VOLTA, {**AMPERE, "compute_cap": "12.0", "uuid": "GPU-b"}], None, self.base), (leg, None))
+        self.assertEqual(E.impulse_build([AMPERE], None, self.base), (None, None))  # newer cards only: the main build
+        prog, why = E.impulse_build([PASCAL, KEPLER], None, self.base)
+        self.assertIsNone(prog)
+        self.assertIn("Tesla K80 is too old for Impulse", why)
+        prog, why = E.impulse_build([PASCAL, {**AMPERE, "name": "Future card", "compute_cap": "13.0"}], None, self.base)
+        self.assertEqual(why, "Impulse (L) carries no kernels for Future card (compute 13.0): it cannot share an engine with "
+                              "NVIDIA GeForce GTX 1080 Ti")
+
+    def test_a_mixed_pc_is_said_so(self):
+        self.assertTrue(E.mixed_pc([PASCAL, AMPERE]))
+        self.assertFalse(E.mixed_pc([PASCAL, VOLTA]))
+        self.assertFalse(E.mixed_pc([AMPERE, TURING]))
+        self.assertFalse(E.mixed_pc([KEPLER, AMPERE]))                          # Kepler: no Impulse build at all
 
     def test_older_cards_run_impulse_l_and_newer_ones_the_main_build(self):
         leg = piece_here(self.base)
@@ -161,12 +178,11 @@ class ImpulseBuildTest(Env):
             with self.assertRaises(E.EngineSpecError) as e:
                 en.start("big")
         self.assertIn("older than Impulse's main build supports", str(e.exception))
-        en = E.Engines(Cfg(self.base, [dict(spec, card="GPU-pppp,GPU-tttt")]))
-        piece_here(self.base)
+        en = E.Engines(Cfg(self.base, [dict(spec, card="GPU-pppp,GPU-tttt")]))      # an older and a newer card, not here
         with mock.patch.object(E, "cards", return_value=[PASCAL, TURING]):
             with self.assertRaises(E.EngineSpecError) as e:
                 en.start("big")
-        self.assertIn("pick cards of one kind", str(e.exception))
+        self.assertIn("Impulse (L)", str(e.exception))
 
     def test_an_engine_on_an_old_card_runs_impulse_l_once_it_is_here(self):
         leg = piece_here(self.base)
@@ -183,6 +199,13 @@ class ImpulseBuildTest(Env):
         with mock.patch.object(E, "cards", return_value=[PASCAL]), mock.patch.object(E, "command_of", side_effect=command_of):
             with self.assertRaises(RuntimeError):
                 en.start("old")
+        self.assertEqual(seen[0]["binary"], leg)
+        seen.clear()                                                               # an older and a newer card: Impulse (L)
+        en = E.Engines(Cfg(self.base, [{"name": "both", "kind": "impulse", "model": model, "port": 18313,
+                                        "card": "GPU-pppp,GPU-aaaa", "where": "local"}]))
+        with mock.patch.object(E, "cards", return_value=[PASCAL, AMPERE]), mock.patch.object(E, "command_of", side_effect=command_of):
+            with self.assertRaises(RuntimeError):
+                en.start("both")
         self.assertEqual(seen[0]["binary"], leg)
 
 
@@ -233,7 +256,8 @@ class GuidedSetupTest(Env):
         piece_here(self.base)
         big = {**PASCAL, "memory_mb": 24576}
         self.cards(big, AMPERE)
-        self.assertEqual(W._cards_for({}, srv, "/bin/sh"), "GPU-pppp")            # with it, the roomier card (Impulse (L))
+        self.assertEqual(W._cards_for({}, srv, "/bin/sh"), "GPU-aaaa")            # Nebula's pick: the newer card, main build
+        self.assertEqual(W._cards_for({"cards": ["GPU-pppp"]}, srv, "/bin/sh"), "GPU-pppp")   # the owner's choice
         self.assertEqual(W._cards_for({}), "GPU-aaaa")                            # a Flash-Next pack: never an older card
 
     def test_kepler_is_not_offered_impulse_l(self):
@@ -253,7 +277,120 @@ class GuidedSetupTest(Env):
         m = {"layouts": [{"id": "two", "cards": 2, "min_total_mb": 16000, "about": "both cards"}]}
         self.assertIsNone(C.layout(m, legacy=False))                              # the main build: no card here
         self.assertEqual(C.layout(m, legacy=True)["card"], "GPU-pppp,GPU-p2")
-        self.assertIsNone(C.layout(m, [PASCAL, AMPERE], legacy=True))             # never an older and a newer card
+        self.assertEqual(C.layout(m, [PASCAL, AMPERE], legacy=True)["card"], "GPU-aaaa,GPU-pppp")   # both kinds on Impulse (L)
+        self.assertIsNone(C.layout(m, [PASCAL, AMPERE], legacy=False))           # the main build: the 3060 alone
+
+
+class MixedPcTest(Env):
+    """A GTX 1080 Ti (11 GB) beside an RTX 3070 (8 GB): Run a model asks which card (Nebula's pick, either one, both),
+    an older card's choice runs Impulse (L) (downloaded first), and the Engines page offers the download too."""
+    TI = {**PASCAL, "uuid": "GPU-ti", "index": 0, "memory_mb": 11264, "used_mb": 0}
+    RTX = {**AMPERE, "uuid": "GPU-rtx", "index": 1, "name": "NVIDIA GeForce RTX 3070", "memory_mb": 8192, "used_mb": 0}
+
+    class Server:
+        def __init__(self, base):
+            self.cfg = Cfg(base, [])
+
+    def setUp(self):
+        super().setUp()
+        self.cards(self.TI, self.RTX)
+        self.srv = self.Server(self.base)
+        os.environ["NEBULA_IMPULSE_BIN"] = "/bin/sh"
+
+    def tearDown(self):
+        os.environ.pop("NEBULA_IMPULSE_BIN", None)
+        super().tearDown()
+
+    def test_run_a_model_asks_which_card_only_on_a_mixed_pc(self):
+        from nebula import wizards as W
+        d = W.DeployOwn()
+        self.assertTrue(d.defaults(self.srv)["mixed_cards"])
+        self.assertIn(W.CARD_FIELD, d.steps[0]["fields"])
+        with mock.patch("nebula.pieces.pin", side_effect=published):
+            opts = d.options(self.srv, "card_choice", {})
+        self.assertEqual([o["value"] for o in opts], ["", "GPU-ti", "GPU-rtx", "all"])
+        self.assertEqual(opts[0]["label"], "Nebula's pick: NVIDIA GeForce RTX 3070 · 8.0 GB free")
+        self.assertEqual(opts[1]["label"], "NVIDIA GeForce GTX 1080 Ti · 11.0 GB free · Impulse (L), a 494 MB download first")
+        self.assertEqual(opts[2]["label"], "NVIDIA GeForce RTX 3070 · 8.0 GB free")
+        self.assertEqual(opts[3]["label"], "All 2 together · 19.0 GB free · Impulse (L), a 494 MB download first")
+        self.assertFalse(any(o.get("disabled") for o in opts))
+        with mock.patch("nebula.pieces.pin", side_effect=unpublished):       # not published: the older card can't be picked
+            self.assertTrue(d.options(self.srv, "card_choice", {})[1].get("disabled"))
+        os.environ["NEBULA_FAKE_DRIVER"] = "470.82.01"                            # a driver too old: nor can it
+        self.assertTrue(d.options(self.srv, "card_choice", {})[3].get("disabled"))
+        self.cards(AMPERE)
+        self.assertFalse(d.defaults(self.srv)["mixed_cards"])
+        self.assertEqual(d.options(self.srv, "card_choice", {}), [])
+
+    def test_the_choice_picks_the_build(self):
+        from nebula import wizards as W
+        with mock.patch("nebula.pieces.pin", side_effect=published):
+            self.assertEqual(W._engine_for(self.srv, W._with_card_choice({}))[:2], ("impulse", "/bin/sh"))   # Nebula's pick
+            self.assertEqual(W._engine_for(self.srv, W._with_card_choice({"card_choice": "GPU-rtx"}))[:2], ("impulse", "/bin/sh"))
+            a = W._with_card_choice({"card_choice": "GPU-ti"})
+            self.assertEqual(a["cards"], ["GPU-ti"])
+            self.assertEqual(W._engine_for(self.srv, a)[:2], ("impulse", E.LEGACY))          # downloaded first
+            self.assertEqual(W._cards_line(a), ["Put it on the NVIDIA GeForce GTX 1080 Ti"])
+            both = W._with_card_choice({"card_choice": "all"})
+            self.assertEqual(both["cards"], ["GPU-ti", "GPU-rtx"])
+            self.assertEqual(W._cards_for(both, self.srv, E.LEGACY), "GPU-ti,GPU-rtx")
+            self.assertEqual(W._cards_line(both), ["Put it on NVIDIA GeForce GTX 1080 Ti and NVIDIA GeForce RTX 3070, together"])
+            self.assertEqual(W._portable_lines(self.srv, E.LEGACY)[0][:28], "Downloads Impulse (L) (494 M")
+        leg = piece_here(self.base)
+        self.assertEqual(W._engine_for(self.srv, W._with_card_choice({"card_choice": "all"}))[:2], ("impulse", leg))
+        with mock.patch("nebula.pieces.pin", side_effect=unpublished):
+            os.environ.pop("NEBULA_FAKE_DRIVER")
+            os.environ["NEBULA_FAKE_DRIVER"] = "470.82.01"
+            pkg, binary, why = W._engine_for(self.srv, W._with_card_choice({"card_choice": "GPU-ti"}))
+            self.assertIsNone(binary)
+            self.assertIn("needs 525.60.13 or newer", why)
+
+    def test_both_cards_only_when_the_model_needs_them(self):
+        from nebula import wizards as W
+        m = {"layouts": [{"id": "two", "cards": 2, "min_total_mb": 16000, "about": "both cards"}]}
+        with mock.patch("nebula.pieces.pin", side_effect=published):
+            lay, binary = W._catalog_layout(self.srv, {}, m, "impulse", "/bin/sh")
+            self.assertEqual((lay["card"], binary), ("GPU-ti,GPU-rtx", E.LEGACY))             # it needs both: Impulse (L)
+            self.assertEqual(W._catalog_layout(self.srv, {}, {"layouts": []}, "impulse", "/bin/sh"), (None, "/bin/sh"))
+            self.assertEqual(W._catalog_layout(self.srv, {"cards": ["GPU-rtx"]}, m, "impulse", "/bin/sh"), (None, "/bin/sh"))
+        with mock.patch("nebula.pieces.pin", side_effect=unpublished):         # no Impulse (L) to be had: the 3070 alone
+            self.assertEqual(W._catalog_layout(self.srv, {}, m, "impulse", "/bin/sh"), (None, "/bin/sh"))
+
+    def test_the_engines_page_offers_the_download(self):
+        from nebula import yard as Y
+        with mock.patch("nebula.pieces.pin", side_effect=published):
+            st = E.legacy_status(self.base)
+            self.assertEqual((st["here"], st["why"]), (False, None))
+            self.assertIn("downloads Impulse (L) (494 MB)", st["offer"])
+            got = []
+
+            def fetch(name, base, progress=None):
+                got.append(name)
+                progress(5, 10)
+                return piece_here(base)
+            Y._LEGACY_FETCH.clear()
+            with mock.patch("nebula.pieces.fetch", side_effect=fetch):
+                r = Y.legacy_fetch(self.srv)
+                for _ in range(100):
+                    if Y._LEGACY_FETCH.get("state") != "downloading":
+                        break
+                    import time
+                    time.sleep(0.02)
+            self.assertEqual(got, [E.LEGACY])
+            self.assertEqual(r["legacy"]["fetch"]["state"], "downloading")
+            self.assertEqual(Y._LEGACY_FETCH["state"], "done")
+            self.assertTrue(E.legacy_status(self.base)["here"])
+            self.assertTrue(Y.legacy_fetch(self.srv)["legacy"]["here"])          # here already: nothing downloads again
+        Y._LEGACY_FETCH.clear()
+        self.cards(AMPERE)                                                        # no older card: still to be had
+        self.assertIsNone(E.legacy_status(self.base))
+        opt = E.legacy_optional(self.base)
+        self.assertEqual((opt["optional"], opt["here"], opt["program"] is not None), (True, True, True))   # downloaded above
+        self.assertTrue(Y.legacy_fetch(self.srv)["legacy"]["here"])
+        self.cards()
+        self.assertIsNone(E.legacy_optional(self.base))
+        with self.assertRaises(Y.YardError):
+            Y.legacy_fetch(self.srv)                                              # no NVIDIA card: it cannot run here
 
 
 class HaloTest(Env):

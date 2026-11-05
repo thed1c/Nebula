@@ -21,6 +21,7 @@ class Tier:
     thinking: bool | None = None              # None: as the request asks; False: off; True: on
     reasoning_budget_tokens: int | None = None
     provider: str | None = None               # "openai-compatible" for a remote tier
+    hf_repo: str | None = None                # its Hugging Face name (owner/name): what Halo researches, what friends see
     base_url: str | None = None
     model: str | None = None                  # the model name a provider tier is asked for
     api_key_env: str | None = None            # the environment variable holding its key
@@ -32,6 +33,8 @@ class Tier:
     cli: str | None = None                    # a command tier: one of the CLIs nebula/commands.py knows (claude, codex, grok)
     command: list | str | None = None         # or the owner's own command, with the prompt on its stdin (plan step F)
     cwd: str | None = None                    # where the command runs (default: nebula-work beside the config)
+    writes: bool = False                      # a command tier may change files in its cwd (codex workspace-write, claude
+                                              # acceptEdits); read only otherwise. Needs its own cwd: never the default
     slots: int | None = None                  # how many may run at once (default 2)
     sandbox: dict | None = None               # run the command in an OpenShell sandbox: {"image", "env", "providers", "policy", "model_via_nebula"} (step O1)
     peer: str | None = None                   # the uuid of the paired machine this tier came from, when it did
@@ -87,6 +90,7 @@ class Agent:
     thinking: bool | None = None
     output_schema: dict | None = None        # a JSON schema the engine enforces on its answers
     tools: list = field(default_factory=list)   # names from "mcp_servers": their tools, run by the cockpit
+    skills: list = field(default_factory=list)  # skill names attached to this agent's turns
     models: list = field(default_factory=list)  # the ticks: the tiers it may use, in order; empty = tier/ceiling on the ladder
     priority: str | None = None               # its class at the gates: interactive, agent, background; None = by the input
     default: bool = False
@@ -100,7 +104,7 @@ class Agent:
         known = {k: d.get(k) for k in Agent.__dataclass_fields__ if k in d}
         if "class" in d and "priority" not in known:
             known["priority"] = d["class"]
-        for k in ("tools", "models"):
+        for k in ("tools", "models", "skills"):
             if known.get(k) is None:
                 known.pop(k, None)
         return Agent(**known)

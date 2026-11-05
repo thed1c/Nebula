@@ -32,12 +32,14 @@ import json
 import logging
 import os
 import queue
+import re
 import secrets
 import threading
 import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from nebula.privdir import private_dir
 
 LOG = logging.getLogger("nebula.gravity")
@@ -45,6 +47,15 @@ ENROLL, MODELS, LOAD, INFER, ADMIN = (b"gravity/enroll/1", b"gravity/models/1", 
                                       b"gravity/infer/1", b"gravity/admin/1")
 INVITE_PREFIX = "nebula-invite:"
 MAX_REQ = 32 << 20
+
+
+_INFER_PATH = re.compile(r"/v1/[A-Za-z0-9_\-/.]+")
+
+
+def infer_path_ok(path) -> bool:
+    """What a peer may call through INFER: the model API (/v1/chat/completions, /v1/messages, ...), POST-shaped, with
+    no way back up the tree. It goes to loopback with the internal token, so anything else would be the owner's page API."""
+    return isinstance(path, str) and bool(_INFER_PATH.fullmatch(path)) and ".." not in path and "//" not in path
 
 
 _LOOP: asyncio.AbstractEventLoop | None = None       # one loop for every node in this process: iroh's callbacks
@@ -74,17 +85,87 @@ def anti_gravity(tier) -> str | None:
 def needs_care(tier, engines=None) -> str | None:
     """Why sharing a local model warns both ends, else None: the owner marked it, or Nebula does not run its engine
     (so it cannot set that engine's isolation), or it is another router of machines, or its engine runs without a
-    sandbox (design decision, 2026-10-20: shared, the other side sees that warning too)."""
+    sandbox (design decision, 2026-10-20: shared, the other side sees that warning too). An engine Nebula deployed on
+    one of the household's own servers (mesh "network", managed) is a Nebula install like a local one: no warning."""
     managed = getattr(tier, "managed", None)
     if managed and engines is not None and managed in getattr(engines, "unsandboxed", {}):
         return "its engine runs without a sandbox: " + engines.unsandboxed[managed]
     if getattr(tier, "risky", False):
         return "you marked it as needing care"
+    if getattr(tier, "mesh", None) == "network" and managed:
+        return None                     # an engine Nebula deployed on one of the household's servers: its own sandbox there
     if getattr(tier, "mesh", None):
         return "it is a router of other machines: Nebula cannot keep tenants apart there"
     if not getattr(tier, "managed", None):
         return "Nebula does not run its engine, so it cannot lock it down or keep tenants apart in it"
     return None
+
+
+# Limits on one model shared with one peer (the Gravity page's "+" and a model's hover card): the peer row's
+# "limits": {"<model>": {"calls_per_hour": 60, "max_output_tokens": 4096, "max_concurrent": 2}}. Checked when the
+# peer's call arrives (INFER): over its hourly count or its calls at once, 429; a longer reply than allowed is asked
+# for as the limit. The peer sees them with what it is offered.
+GRANT_LIMITS = {"calls_per_hour": (1, 100_000), "max_output_tokens": (16, 1_000_000), "max_concurrent": (1, 64)}
+_CALLS: dict[tuple, list] = {}                         # (peer, model) -> the times of its calls in the last hour
+_RUNNING: dict[tuple, int] = {}                        # (peer, model) -> its calls running now
+_LIMIT_LOCK = threading.Lock()
+
+
+def check_limits(req: dict) -> dict:
+    """The limits as given (a number, or nothing for none), checked."""
+    out = {}
+    for k, (lo, hi) in GRANT_LIMITS.items():
+        v = req.get(k)
+        if v in (None, "", 0, "0"):
+            continue
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            raise GravityError(400, f"{k.replace('_', ' ')} is a whole number") from None
+        if not lo <= n <= hi:
+            raise GravityError(400, f"{k.replace('_', ' ')} is from {lo:,} to {hi:,}")
+        out[k] = n
+    return out
+
+
+def admit_call(pid: str, model: str, lim: dict, now: float | None = None) -> str | None:
+    """A peer's call to a model within its limits: counted and None, or why it is refused (nothing counted)."""
+    now = time.time() if now is None else now
+    key = (pid, model)
+    with _LIMIT_LOCK:
+        q = [t for t in _CALLS.get(key, []) if t > now - 3600]
+        if lim.get("calls_per_hour") and len(q) >= lim["calls_per_hour"]:
+            _CALLS[key] = q
+            return f"at most {lim['calls_per_hour']} calls an hour to {model} (this Nebula's owner set it)"
+        if lim.get("max_concurrent") and _RUNNING.get(key, 0) >= lim["max_concurrent"]:
+            return f"at most {lim['max_concurrent']} calls at once to {model} (this Nebula's owner set it)"
+        q.append(now)
+        _CALLS[key] = q
+        _RUNNING[key] = _RUNNING.get(key, 0) + 1
+    return None
+
+
+def call_done(pid: str, model: str) -> None:
+    with _LIMIT_LOCK:
+        n = _RUNNING.get((pid, model), 0) - 1
+        if n > 0:
+            _RUNNING[(pid, model)] = n
+        else:
+            _RUNNING.pop((pid, model), None)
+
+
+def cap_reply(path: str | None, body: dict, cap: int | None) -> None:
+    """Ask for no longer a reply than the limit: each length field the request has, or the one its API uses."""
+    if not cap or not isinstance(body, dict):
+        return
+    keys = [k for k in ("max_tokens", "max_completion_tokens", "max_output_tokens") if k in body]
+    if not keys:
+        keys = ["max_output_tokens" if str(path or "").startswith("/v1/responses") else "max_tokens"]
+    for k in keys:
+        try:
+            body[k] = min(int(body.get(k) or cap), cap)
+        except (TypeError, ValueError):
+            body[k] = cap
 
 
 class GravityError(ValueError):
@@ -103,6 +184,42 @@ def available() -> tuple[bool, str | None]:
 
 def _sha(x: str) -> str:
     return hashlib.sha256(x.encode()).hexdigest()
+
+
+def who(p: dict) -> str:
+    """A peer as messages, logs and tier names say it: never its machine name (the page masks it; it shows only
+    where the owner chose to see the names). Its role and the start of its key tell two apart."""
+    kind = "your other machine" if p.get("role") in ("owner", "admin") else "a friend's Nebula"
+    return f"{kind} ({str(p.get('id') or '')[:6]})"
+
+
+ALIAS_A = ("Amber", "Ashen", "Azure", "Bright", "Cobalt", "Crimson", "Distant", "Drifting", "Ember", "Faint", "Frozen",
+           "Gilded", "Hidden", "Indigo", "Opal", "Jade", "Lone", "Lunar", "Misty", "Nimble", "Pale", "Quiet", "Rapid",
+           "Rose", "Scarlet", "Silent", "Silver", "Solar", "Swift", "Teal", "Velvet", "Violet", "Wandering", "Wild")
+ALIAS_B = ("Aurora", "Comet", "Corona", "Cosmos", "Ember", "Equinox", "Flare", "Galaxy", "Beacon", "Horizon", "Ion",
+           "Lantern", "Meteor", "Moon", "Nova", "Orbit", "Parsec", "Photon", "Pulsar", "Quasar", "Ray", "Ring", "Drift",
+           "Spark", "Star", "Sun", "Tide", "Vega", "Vortex", "Wisp", "Zenith")
+
+
+def alias() -> str:
+    """A random name for a peer, new each time it comes online: its machine name never shows, and its name today says
+    nothing about who it was yesterday."""
+    return f"{secrets.choice(ALIAS_A)} {secrets.choice(ALIAS_B)}"
+
+
+def peer_of(tier) -> str | None:
+    """The peer a model adopted through Gravity reaches (its engine is the bridge's /peer/<id>), else None."""
+    if getattr(tier, "mesh", None) != "gravity-peer" or "/peer/" not in (tier.engine or ""):
+        return None
+    return tier.engine.rsplit("/peer/", 1)[1].split("/", 1)[0] or None
+
+
+def why(e: BaseException) -> str:
+    """A failure in words. A timeout's own message is empty (asyncio's and concurrent.futures'), which left the page
+    saying "cannot be reached: " with nothing after it."""
+    if isinstance(e, TimeoutError):
+        return "no answer in time (it may be closed or asleep, or the two of you have no relay in common)"
+    return str(e) or type(e).__name__
 
 
 async def _read_all(recv, limit=MAX_REQ) -> bytes:
@@ -146,7 +263,7 @@ class GravityNode:
         if not gw.get("managed"):
             return
         from nebula import gateway
-        members = [self.node_id()] + [p["id"] for p in self.section()["peers"]]
+        members = [self.node_id()] + [p["id"] for p in self.section()["peers"] if not p.get("blocked")]
         try:
             gateway.update_members(gw["dir"], members, gw.get("hostname"), gw.get("email"), int(gw.get("port") or 3340))
         except Exception as e:  # noqa: BLE001 - the page shows the gateway's state
@@ -189,7 +306,7 @@ class GravityNode:
         import iroh
         p = self.key_path()
         if p and os.path.exists(p):
-            return open(p, "rb").read()
+            return Path(p).read_bytes()
         raw = iroh.SecretKey.generate().to_bytes()
         if p:
             private_dir(os.path.dirname(p))
@@ -211,8 +328,27 @@ class GravityNode:
             LOG.warning(self.why)
             return self
         self.bridge = _Bridge(self)
+        self.repoint()
         threading.Thread(target=self._looking, name="gravity-look", daemon=True).start()
         return self
+
+    def repoint(self) -> list[str]:
+        """The adopted models onto this bridge. The bridge listens on a new loopback port each start (a restart of
+        Nebula, a relay switched), and an adopted model kept the old one: it was dead until adopted again."""
+        moved = []
+        for t in self.cfg.tiers:
+            pid = peer_of(t)
+            if pid and t.engine != f"{self.bridge.url}/peer/{pid}":
+                t.engine = f"{self.bridge.url}/peer/{pid}"
+                moved.append(t.name)
+        if moved:
+            try:
+                from nebula.server import reload_models
+                reload_models(self.server)
+            except Exception as e:  # noqa: BLE001 - at start the server builds its engines after this anyway
+                LOG.warning("gravity: the adopted models were not reloaded: %s", e)
+            self.save()
+        return moved
 
     # --- the constellation: every member's models as they offer them to this one (the map draws them)
     LOOK_S = 20.0
@@ -225,7 +361,8 @@ class GravityNode:
             for p in self.peers():
                 if self._stop.is_set():
                     return
-                self.look(p["id"])
+                if not p.get("blocked"):                  # a blocked peer is not asked anything
+                    self.look(p["id"])
             self._look.wait(self.LOOK_S)
             self._look.clear()
 
@@ -235,15 +372,46 @@ class GravityNode:
         try:
             r = self.ask(pid, MODELS, {"addr": self.addr()}, timeout=10)    # each side says where it is now
             self.fresh_addr(pid, r.get("addr"))
+            ur = r.get("unrouted_real") if isinstance(r.get("unrouted_real"), dict) else {}
             now = {"offers": [m["name"] for m in r.get("models") or [] if m.get("name")],
-                   "unrouted": [str(n) for n in r.get("unrouted") or []], "reachable": True, "at": time.time()}
+                   "offer_limits": {m["name"]: m["limits"] for m in r.get("models") or [] if m.get("name") and isinstance(m.get("limits"), dict)},
+                   "unrouted": [str(n) for n in r.get("unrouted") or []], "reachable": True, "at": time.time(),
+                   # each model's own name (an older Nebula sends none: its alias stands)
+                   "real": {**{str(k): str(v)[:120] for k, v in ur.items()},
+                            **{m["name"]: str(m.get("real") or str(m.get("hf") or "").rsplit("/", 1)[-1])[:120]
+                               for m in r.get("models") or [] if m.get("name") and (m.get("real") or m.get("hf"))}},
+                   # a new random name each time it comes (back) online; the same while it stays
+                   "alias": was.get("alias") if was.get("reachable") is True and was.get("alias") else alias()}
         except Exception as e:  # noqa: BLE001 - away: keep what it offered last, marked away
-            now = {**was, "reachable": False, "error": str(e)[:200], "at": time.time()}
+            now = {**was, "reachable": False, "error": why(e)[:200], "at": time.time()}
+        if was.get("reachable") is not False and now["reachable"] is False:
+            LOG.warning("gravity: %s is away: %s", self._name(pid), now["error"].split(" cannot be reached: ")[-1])
+        elif was.get("reachable") is False and now["reachable"]:
+            LOG.info("gravity: %s is back", self._name(pid))
         self.seen[pid] = now
         return now
 
+    def _name(self, pid: str) -> str:
+        return who(self.peer(pid) or {"id": pid})
+
     def _run(self, coro, timeout: float = 60):
-        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
+        fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        try:
+            return fut.result(timeout)
+        except BaseException:
+            fut.cancel()                                   # a dial that timed out stops here, not 20 s later
+            raise
+
+    def forget_conns(self, pid: str) -> None:
+        """Drop the cached connections to a peer: after a failed call the next one dials again from scratch, instead
+        of reusing a connection whose path died (its own close reason only shows after QUIC's idle timeout)."""
+        with self.lock:
+            for k in [k for k in self.conns if k[0] == pid]:
+                c = self.conns.pop(k)
+                try:
+                    c.close(0, b"redial")
+                except Exception:  # noqa: BLE001
+                    pass
 
     async def _bind(self):
         import iroh
@@ -382,7 +550,7 @@ class GravityNode:
                         "public relay\" in the Gravity tab, then join again.")
             elif not a.get("relay"):
                 hint = " Their invite has no relay, so it works only on their network."
-            raise GravityError(502, f"the Nebula that made the invite cannot be reached: {e}.{hint}") from None
+            raise GravityError(502, f"the Nebula that made the invite cannot be reached: {why(e)}.{hint}") from None
         if not reply.get("ok"):
             raise GravityError(403, reply.get("why") or "the invite was refused")
         row = {"id": a["id"], "name": reply.get("name") or inv.get("name") or a["id"][:8], "addr": a, "grants": [],
@@ -420,9 +588,44 @@ class GravityNode:
             e.needs_confirm = unconfirmed
             raise e
         p["grants"] = list(dict.fromkeys(models))
+        if p.get("limits"):                               # a model no longer shared keeps no limits
+            p["limits"] = {m: v for m, v in p["limits"].items() if m in p["grants"]}
         self.look_soon()
         self.save()
         return p
+
+    def set_limits(self, pid: str, model: str, req: dict) -> dict:
+        """The limits on one model shared with this peer (none given: no limits)."""
+        p = self.peer(pid)
+        if p is None:
+            raise GravityError(404, f"no peer {pid}")
+        if model not in (p.get("grants") or []):
+            raise GravityError(400, f"{model} is not shared with {who(p)}: share it first")
+        lim = check_limits(req)
+        p["limits"] = {k: v for k, v in (p.get("limits") or {}).items() if k != model}
+        if lim:
+            p["limits"][model] = lim
+        self.look_soon()
+        self.save()
+        return p
+
+    def block(self, pid: str, on: bool = True) -> dict:
+        """Block a peer (on) or let it back (off). A blocked peer stays on the list with its shares kept for an unblock,
+        but gets nothing: its calls are refused and its connection closed, it is not asked what it offers, a gateway
+        this Nebula runs leaves it out, and an invite cannot bring it back while it is blocked."""
+        p = self.peer(pid)
+        if p is None:
+            raise GravityError(404, f"no peer {pid}")
+        if on:
+            p["blocked"] = time.time()
+        else:
+            p.pop("blocked", None)
+        self.save()
+        self.members_changed()
+        self.forget_conns(pid)
+        if on:
+            self.seen[pid] = {**(self.seen.get(pid) or {}), "reachable": False, "error": "blocked", "at": time.time()}
+        return {k: v for k, v in p.items() if k != "addr"}
 
     def revoke(self, pid: str) -> bool:
         g = self.section()
@@ -430,13 +633,7 @@ class GravityNode:
         g["peers"] = [p for p in g["peers"] if p["id"] != pid]
         self.save()
         self.members_changed()
-        with self.lock:
-            for k in [k for k in self.conns if k[0] == pid]:
-                c = self.conns.pop(k)
-                try:
-                    c.close(0, b"revoked")
-                except Exception:  # noqa: BLE001
-                    pass
+        self.forget_conns(pid)
         from nebula.server import reload_models
         self.cfg.tiers = [t for t in self.cfg.tiers if not (getattr(t, "mesh", None) == "gravity-peer" and (t.engine or "").endswith("/peer/" + pid))]
         reload_models(self.server)
@@ -467,18 +664,21 @@ class GravityNode:
         p = self.peer(pid)
         if p is None:
             raise GravityError(404, f"no peer {pid}")
+        if p.get("blocked"):
+            raise GravityError(403, f"{who(p)} is blocked here")
         try:
             return self._run(self._ask(p["addr"], alpn, payload), timeout)
         except GravityError:
             raise
         except Exception as e:  # noqa: BLE001
-            raise GravityError(502, f"{p['name']} cannot be reached: {e}") from None
+            self.forget_conns(pid)
+            raise GravityError(502, f"{who(p)} cannot be reached: {why(e)}") from None
 
     def stream(self, pid: str, alpn: bytes, payload: dict, out: "queue.Queue"):
         """A request whose answer streams: (status, content type) first, then the body's chunks, then None."""
         p = self.peer(pid)
-        if p is None:
-            out.put(GravityError(404, f"no peer {pid}"))
+        if p is None or p.get("blocked"):
+            out.put(GravityError(404, f"no peer {pid}") if p is None else GravityError(403, f"{who(p)} is blocked here"))
             return
 
         async def go():
@@ -504,7 +704,9 @@ class GravityNode:
                     out.put(chunk)
                 out.put(None)
             except Exception as e:  # noqa: BLE001
-                out.put(e if isinstance(e, GravityError) else GravityError(502, f"{p['name']}: {e}"))
+                if not isinstance(e, GravityError):
+                    self.forget_conns(pid)
+                out.put(e if isinstance(e, GravityError) else GravityError(502, f"{who(p)}: {why(e)}"))
         asyncio.run_coroutine_threadsafe(go(), self.loop)
 
     def adopt(self, pid: str) -> dict:
@@ -517,8 +719,13 @@ class GravityNode:
             raise GravityError(404, f"no peer {pid}")
         offered = self.ask(pid, MODELS, {}).get("models") or []
         made = []
+        have = {(peer_of(t), t.model) for t in self.cfg.tiers}
         for m in offered:
-            name = re.sub(r"[^a-z0-9._-]+", "-", f"{p['name']}-{m['name']}".lower()).strip("-")[:48]
+            if (pid, m["name"]) in have:                   # adopted before (perhaps under its old name): it stays
+                continue
+            kind = "machine" if p.get("role") in ("owner", "admin") else "friend"     # never its machine name
+            shown = str(m.get("hf") or "").rsplit("/", 1)[-1] or m.get("real") or m["name"]   # its own name, not its alias
+            name = re.sub(r"[^a-z0-9._-]+", "-", f"{kind}-{pid[:4]}-{shown}".lower()).strip("-")[:48]
             if self.cfg.tier(name) is None:
                 self.cfg.tiers.append(Tier(name=name, engine=f"{self.bridge.url}/peer/{pid}", model=m["name"],
                                            mesh="gravity-peer", health_path="/v1/models", context=m.get("context"),
@@ -527,7 +734,7 @@ class GravityNode:
         reload_models(self.server)
         if self.cfg.path:
             self.cfg.save()
-        warn = [f"{p['name']}'s {m['name']} is not guaranteed safe: {m.get('why')}" for m in offered if m.get("not_guaranteed_safe")]
+        warn = [f"{who(p)}'s {m['name']} is not guaranteed safe: {m.get('why')}" for m in offered if m.get("not_guaranteed_safe")]
         return {"made": made, "offered": [m["name"] for m in offered], "warnings": warn}
 
     def view(self) -> dict:
@@ -571,22 +778,39 @@ class _Handler:
         if self.alpn == ENROLL:
             return await _reply(bi, self._enroll(remote, req))
         p = node.peer(remote)
-        if p is None:                                         # not (or no longer) a peer: nothing at all
+        if p is None or p.get("blocked"):                     # not (or no longer) a peer, or blocked: nothing at all
             await _reply(bi, {"ok": False, "why": "not a peer of this Nebula"})
             conn.close(1, b"not a peer")
             return
         if self.alpn == MODELS:
             node.fresh_addr(remote, req.get("addr"))
-            return await _reply(bi, {"ok": True, "models": self._granted(p), "unrouted": self._unrouted(p), "addr": node.addr()})
+            return await _reply(bi, {"ok": True, "models": self._granted(p), "unrouted": self._unrouted(p),
+                                     "unrouted_real": self._unrouted_real(p), "addr": node.addr()})
         if self.alpn == LOAD:
             return await _reply(bi, {"ok": True, "pending": self._pending(p)})
         if self.alpn == INFER:
+            if not infer_path_ok(req.get("path")):              # a peer's calls reach the model API only, never the page API
+                if getattr(node.server, "seclog", None) is not None:
+                    node.server.seclog.add("guest.refused", f"peer:{remote}", str(req.get("path") or "")[:60], via="gravity")
+                return await self._head(bi, 403, {"error": {"message": "Gravity carries model calls (/v1/...) only", "type": "gravity"}})
             model = (req.get("body") or {}).get("model")
             if model not in [m["name"] for m in self._granted(p)]:
                 if getattr(node.server, "seclog", None) is not None:
                     node.server.seclog.add("guest.refused", f"peer:{remote}", f"model:{model}", via="gravity")
                 return await self._head(bi, 403, {"error": {"message": f"{model!r} is not granted to you", "type": "gravity"}})
-            return await self._forward(bi, req, {"X-Nebula-From": remote, "X-Nebula-Internal": node.server.internal_token})
+            lim = (p.get("limits") or {}).get(model) or {}
+            if not lim:
+                return await self._forward(bi, req, {"X-Nebula-From": remote, "X-Nebula-Internal": node.server.internal_token})
+            refused = admit_call(remote, model, lim)
+            if refused:
+                if getattr(node.server, "seclog", None) is not None:
+                    node.server.seclog.add("guest.limited", f"peer:{remote}", f"model:{model}", via="gravity")
+                return await self._head(bi, 429, {"error": {"message": refused, "type": "rate_limit"}})
+            cap_reply(req.get("path"), req.get("body"), lim.get("max_output_tokens"))
+            try:
+                return await self._forward(bi, req, {"X-Nebula-From": remote, "X-Nebula-Internal": node.server.internal_token})
+            finally:
+                call_done(remote, model)
         if self.alpn == ADMIN:
             if p.get("role") != "owner":
                 if getattr(node.server, "seclog", None) is not None:
@@ -605,6 +829,12 @@ class _Handler:
         if inv is None:
             if log is not None:
                 log.add("gravity.refused", f"node:{remote[:16]}", "enroll", why="an invite that is not valid")
+            return {"ok": False, "why": "this invite is not valid (used, expired or never made here)"}
+        if (node.peer(remote) or {}).get("blocked"):        # a blocked peer cannot come back by an invite (it is spent)
+            inv["used"] = time.time()
+            node.save()
+            if log is not None:
+                log.add("gravity.refused", f"peer:{remote}", "enroll", why="blocked")
             return {"ok": False, "why": "this invite is not valid (used, expired or never made here)"}
         inv["used"] = time.time()
         addr = req.get("addr") if isinstance(req.get("addr"), dict) and req["addr"].get("id") == remote else {"id": remote}
@@ -626,7 +856,12 @@ class _Handler:
             t = self.node.cfg.tier(m)
             if t is not None and getattr(t, "shared", False) and not anti_gravity(t):
                 care = needs_care(t, getattr(self.node.server, "yard", None))
-                out.append({"name": m, "context": t.context, "slots": t.slots,
+                from nebula import profiles                   # its Hugging Face name: the name a friend sees it by
+                hf = profiles.repo_of(self.node.cfg, t, getattr(getattr(self.node.server, "yard", None), "models_dir", lambda: None)())
+                real = profiles.real_name(self.node.cfg, t, getattr(getattr(self.node.server, "yard", None), "models_dir", lambda: None)())
+                lim = (p.get("limits") or {}).get(m)
+                out.append({"name": m, "context": t.context, "slots": t.slots, **({"hf": hf} if hf else {}), **({"limits": lim} if lim else {}),
+                            **({"real": real} if real and real != m else {}),
                             **({"not_guaranteed_safe": True, "why": care} if care else {})})
         return out
 
@@ -637,6 +872,18 @@ class _Handler:
         routed = {m["name"] for m in self._granted(p)}
         return [t.name for t in self.node.cfg.tiers
                 if t.name not in routed and not anti_gravity(t) and getattr(t, "mesh", None) != "gravity-peer" and t.engine]
+
+    def _unrouted_real(self, p: dict) -> dict:
+        """{alias: the model's own name} for the unrouted ones that have one (a friend sees what they are)."""
+        from nebula import profiles
+        md = getattr(getattr(self.node.server, "yard", None), "models_dir", lambda: None)()
+        out = {}
+        for n in self._unrouted(p):
+            t = self.node.cfg.tier(n)
+            real = profiles.real_name(self.node.cfg, t, md) if t is not None else None
+            if real and real != n:
+                out[n] = real
+        return out
 
     def _pending(self, p: dict) -> dict:
         adm = self.node.server.admission
@@ -652,7 +899,7 @@ class _Handler:
         await bi.send().write_all(json.dumps({"status": status, "content_type": "application/json"}).encode() + b"\n" + json.dumps(body).encode())
         await bi.send().finish()
 
-    async def _forward(self, bi, req: dict, headers: dict):
+    async def _forward(self, bi, req: dict, headers: dict):  # (INFER: infer_path_ok checked the path first)
         """The request to this Nebula's own API on loopback (as the peer's tenant), its answer streamed back."""
         loop = asyncio.get_running_loop()
         node = self.node
@@ -722,7 +969,10 @@ class _Bridge:
                 if len(parts) < 4 or parts[1] not in ("peer", "admin"):
                     return self._err(GravityError(404, "no such path"))
                 kind, pid, rest = parts[1], parts[2], "/" + parts[3]
-                n = int(self.headers.get("Content-Length") or 0)
+                v = str(self.headers.get("Content-Length") or "0").strip()
+                if not re.fullmatch(r"[0-9]{1,15}", v):
+                    return self._err(GravityError(400, "the Content-Length header is not a whole number of bytes"))
+                n = int(v)
                 body = json.loads(self.rfile.read(n) or b"{}") if n else None
                 try:
                     if kind == "peer" and rest in ("/health", "/v1/models"):

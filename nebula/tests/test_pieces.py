@@ -81,8 +81,8 @@ class PiecesTest(unittest.TestCase):
             pieces.CATALOG.write_text(json.dumps(m))
             p = pieces.pin("impulse-flashnext")
             self.assertEqual((p["version"], p["url"].rsplit("/", 1)[1]), ("10.0", "impulse-flashnext-10.0-linux-x86_64.tar.gz"))
-        m = json.loads(pieces.CATALOG.read_text())                       # the real catalog: Impulse (L) comes with 0.1.7
-        self.assertEqual(m["pieces"]["impulse-legacy"]["version"], "0.1.7")
+        m = json.loads(pieces.CATALOG.read_text())                       # the real catalog: Impulse (L) comes with 0.2.0 (every card from Maxwell to Blackwell)
+        self.assertEqual(m["pieces"]["impulse-legacy"]["version"], "0.2.0")
 
     def test_an_unpublished_piece_says_so(self):
         with self.catalog(""):

@@ -4,7 +4,8 @@
   `"api"`: `require_key` (when on, every /v1 request needs one of its keys, from this machine too) and `keys` (their
   sha256 only; a key is shown once, when it is made), and `route` (`{}` = Nebula routes each request; `{"tier",
   "model"}` = a dedicated model: that tier, asked for that model by name).
-- **Assistant**: the page's chat. `"assistant"`: `route` as above, `system` (its prompt), `tools` (true = the tools
+- **Assistant**: the page's chat (Halo). `"assistant"`: `route` as above, `soul` (who Halo is: its character and tone,
+  like Hermes' SOUL.md; it goes first), `system` (its instructions, its agent.md), `tools` (true = the tools
   of every Lookup server that is on). It runs as the built-in agent `assistant` unless the page picks another.
 - **Lookup**: the MCP servers (`"mcp_servers"`, Claude Desktop's shape; `"disabled": true` turns one off), including
   two built-in ones, `{"builtin": "docs", "folders": [...]}` and `{"builtin": "web", "provider", "key_env"}`.
@@ -165,7 +166,8 @@ def hub_servers(cfg) -> dict:
             out[name] = {"command": sys.executable, "args": args}
         elif b == "web":
             out[name] = {"command": sys.executable, "args": ["-m", "nebula.lookup.web", "--provider", str(c.get("provider") or "auto"),
-                                                              "--key-env", str(c.get("key_env") or "BRAVE_API_KEY")]}
+                                                              "--key-env", str(c.get("key_env") or "BRAVE_API_KEY")]
+                         + (["--allow-private"] if c.get("allow_private") is True else [])}
         else:
             out[name] = {k: v for k, v in c.items() if k not in ("disabled", "builtin", "label")}
     return out
@@ -268,8 +270,15 @@ def assistant_agent(cfg):
         a = Agent(name=BUILTIN_AGENT)
         a.builtin = True
         cfg.agents.append(a)
-    a.system = d.get("system") or DEFAULT_SYSTEM
+    soul = str(d.get("soul") or "").strip()
+    a.system = (soul + "\n\n" if soul else "") + (d.get("system") or DEFAULT_SYSTEM)
     a.tools = tools
+    from nebula import team
+    from nebula.router import Rules
+    if team.settings(Rules.from_dict(cfg.rules))["mode"] == "on":    # Halo hands real work to a team (nebula/teamtasks.py)
+        from nebula.teamtasks import SYSTEM_TEAMS
+        a.tools = list(tools) + ["starweave"]
+        a.system += SYSTEM_TEAMS
     return a
 
 

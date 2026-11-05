@@ -244,7 +244,9 @@ def config_hosts(path: str | None = None) -> list[str]:
     """The names in ~/.ssh/config (no patterns), for the page to offer."""
     names = []
     try:
-        for ln in open(path or os.environ.get("NEBULA_SSH_CONFIG") or USER_SSH_CONFIG, encoding="utf-8"):
+        with open(path or os.environ.get("NEBULA_SSH_CONFIG") or USER_SSH_CONFIG, encoding="utf-8") as f:
+            text = f.read()
+        for ln in text.splitlines():
             w = ln.split()
             if len(w) > 1 and w[0].lower() == "host":
                 names += [n for n in w[1:] if not any(ch in n for ch in "*?!")]

@@ -26,7 +26,12 @@ class Rig:
     """Two fake engines, a cockpit with fast / think / big tiers, and a ledger in a temporary directory."""
 
     def __init__(self, big_ctx=262144, fast_ctx=None, ledger=True, rules=None, agents=None, mcp_servers=None, secretary=None,
-                 hooks=None, schedules=None, extra_tiers=None):
+                 hooks=None, schedules=None, extra_tiers=None, agent_work=None):
+        # Nebula's own tools go only on agent work (nebula/team.py agent_work): a rig whose rules turn on the team,
+        # the toolbox or skills calls as agent work (X-Nebula-Tools: on) unless told otherwise
+        on = any(isinstance((rules or {}).get(k), dict) and (rules or {})[k].get("mode", "off") != "off"
+                 for k in ("starweave", "toolbox", "skills"))
+        self.agent_work = on if agent_work is None else agent_work
         self.a, self.b = FakeEngine("fastfake"), FakeEngine("bigfake")
         self.tmp = tempfile.TemporaryDirectory()
         self.path = str(Path(self.tmp.name) / "ledger.sqlite3")
@@ -50,7 +55,8 @@ class Rig:
     def chat(self, messages, model="m", headers=None, **extra):
         body = {"model": model, "messages": messages, **extra}
         req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json", **(headers or {})})
+                                     headers={"Content-Type": "application/json",
+                                              **({"X-Nebula-Tools": "on"} if self.agent_work else {}), **(headers or {})})
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read())["choices"][0]["message"]
 
