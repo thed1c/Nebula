@@ -777,6 +777,8 @@ def yard_changed(srv) -> None:
 
 
 def make_server(cfg) -> Server:
+    from nebula.winproc import hide_consoles
+    hide_consoles()                                  # Windows: whoever starts the server, its programs open no window
     srv = Server((cfg.host, cfg.port), Handler)
     srv.cfg = cfg
     srv.errors = ErrorLog().attach()                 # the System tab's error log

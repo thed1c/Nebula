@@ -412,4 +412,6 @@ def execute(folder: str) -> int:
 
 
 if __name__ == "__main__":
+    from nebula.winproc import hide_consoles
+    hide_consoles()                                    # Windows: Codex or Claude Code opens no console window
     sys.exit(execute(sys.argv[1]))

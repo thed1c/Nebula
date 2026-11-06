@@ -49,6 +49,8 @@ def _wait_for_signal() -> None:
 
 
 def main(argv=None) -> int:
+    from nebula.winproc import hide_consoles
+    hide_consoles()               # Windows (pythonw, no console): the programs Nebula starts open no console window
     p = argparse.ArgumentParser(prog="python3 -m nebula.app", description="The cockpit in its own window.")
     p.add_argument("--config", help=f"the cockpit's JSON config (default {default_config()})")
     p.add_argument("--window", choices=("pywebview", "gtk", "browser"), help="the window to use (default: the best here)")

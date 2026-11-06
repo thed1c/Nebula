@@ -56,6 +56,8 @@ def add_log_file(cfg) -> str | None:
 
 
 def main(argv=None) -> int:
+    from nebula.winproc import hide_consoles
+    hide_consoles()                                    # Windows: the programs Nebula starts open no console window
     argv = list(sys.argv[1:] if argv is None else argv)
     cmd = argv.pop(0) if argv and argv[0] in ("serve", "invite", "accept") else None
     headless = "--headless" in argv

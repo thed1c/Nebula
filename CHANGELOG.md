@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0.1
+
+**Windows: no more console windows flashing.** Nebula's server runs without a console on Windows, so each program it
+started (the graphics card readings, WSL and Podman, OpenShell's sandbox list, the toolbox's commands, a skill's script,
+Codex) opened a console window of its own, open while the program ran; in 0.2.0 that was one every few seconds. Every
+program Nebula starts on Windows now runs hidden, as the engines already did. Nothing changes on Linux.
+
 ## 0.2.0
 
 **Star Weaving: your models as one team.** Ask once and Halo picks the model that leads the task. With Teamwork on,
